@@ -12,7 +12,7 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.2.0 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.3.0 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
 
@@ -225,6 +225,14 @@ Full text: [BIBLE.md](BIBLE.md)
 ---
 
 ## Changelog
+
+### v6.3.0 -- Ollama Fallback + Claude Code CLI as Primary + Per-Provider Budget Tracking
+- **Ollama fallback** -- local LLM at `192.168.1.130:11434` used automatically when OpenRouter budget is exhausted or returns 402. Model mapping: `anthropic/*` → `qwen2.5:32b`, others → `qwen2.5:14b`. Zero cost.
+- **Claude Code CLI as primary tool** -- `claude_code_task` (full bash, 30 turns) and `claude_code_edit` (targeted edits, 12 turns) are now the mandated primary tools for all code work. OpenRouter is for orchestration only.
+- **Background consciousness on Claude CLI** -- consciousness loop now routes through Claude Code CLI (Max subscription, free) → Ollama → OpenRouter, in that priority order.
+- **Per-provider budget tracking** -- `spent_usd_openrouter`, `spent_usd_claude_code`, `spent_usd_openai` tracked separately in state.json and displayed in `/status`.
+- **GitHub tools rewritten** -- all 5 GitHub tools (`list_github_issues`, etc.) now use REST API directly via `GITHUB_TOKEN`, no `gh` CLI dependency.
+- **`claude_code_edit` auth fix** -- no longer requires `ANTHROPIC_API_KEY` env var; uses `~/.claude/credentials.json` (Max subscription).
 
 ### v6.2.0 -- Critical Bugfixes + LLM-First Dedup
 - **Fix: worker_id==0 hard-timeout bug** -- `int(x or -1)` treated worker 0 as -1, preventing terminate on timeout and causing double task execution. Replaced all `x or default` patterns with None-safe checks.
