@@ -87,6 +87,13 @@ def _run_shell(ctx: ToolContext, cmd, cwd: str = "") -> str:
 def _build_claude_env() -> dict:
     """Build env dict for Claude CLI subprocess."""
     env = os.environ.copy()
+
+    # Remove CLAUDECODE to allow nested claude CLI calls
+    # (current process may be running inside Claude CLI via MCP)
+    env.pop("CLAUDECODE", None)
+    env.pop("CLAUDE_SESSION_ID", None)
+    env.pop("CLAUDE_CODE_ENTRYPOINT", None)
+
     local_bin = str(pathlib.Path.home() / ".local" / "bin")
     if local_bin not in env.get("PATH", ""):
         env["PATH"] = f"{local_bin}:{env.get('PATH', '')}"
