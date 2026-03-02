@@ -405,6 +405,7 @@ class OuroborosAgent:
 
         drive_logs = self.env.drive_path("logs")
         heartbeat_stop = self._start_task_heartbeat_loop(str(task.get("id") or ""))
+        typing_stop = self._start_typing_indicator_loop()
 
         try:
             # --- Prepare task context ---
@@ -500,6 +501,8 @@ class OuroborosAgent:
                     break
             if heartbeat_stop is not None:
                 heartbeat_stop.set()
+            if typing_stop is not None:
+                typing_stop.set()
             self._current_task_type = None
 
     # =====================================================================
@@ -682,6 +685,20 @@ class OuroborosAgent:
         def _loop() -> None:
             while not stop.wait(interval):
                 self._emit_task_heartbeat(task_id, "running")
+
+        threading.Thread(target=_loop, daemon=True).start()
+        return stop
+
+    def _start_typing_indicator_loop(self) -> Optional[threading.Event]:
+        """Start background thread that periodically sends typing indicator."""
+        if self._event_queue is None or self._current_chat_id is None:
+            return None
+        interval = 5  # Telegram typing indicator expires after ~5-6 seconds
+        stop = threading.Event()
+
+        def _loop() -> None:
+            while not stop.wait(interval):
+                self._emit_typing_start()
 
         threading.Thread(target=_loop, daemon=True).start()
         return stop
