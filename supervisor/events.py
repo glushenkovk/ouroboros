@@ -58,9 +58,11 @@ def _handle_typing_start(evt: Dict[str, Any], ctx: Any) -> None:
     try:
         chat_id = int(evt.get("chat_id") or 0)
         if chat_id:
-            ctx.TG.send_chat_action(chat_id, "typing")
+            success = ctx.TG.send_chat_action(chat_id, "typing")
+            if not success:
+                log.warning(f"Failed to send typing indicator to chat_id={chat_id}")
     except Exception:
-        log.debug("Failed to send typing action to chat", exc_info=True)
+        log.warning("Exception while sending typing action to chat", exc_info=True)
         pass
 
 
