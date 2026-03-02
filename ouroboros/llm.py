@@ -7,8 +7,12 @@ Contract: chat(), default_model(), available_models(), add_usage().
 
 from __future__ import annotations
 
+import json as _json
 import logging
 import os
+import shutil
+import subprocess
+import tempfile
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -448,6 +452,110 @@ class OpenAIClient:
         return msg, usage
 
 
+class ClaudeCodeClient:
+    """Lightweight LLM client that shells out to the `claude` CLI binary.
+
+    Designed for Max subscription usage — no HTTP API, no token tracking.
+    Uses `claude -p` (print/pipe mode) with `--output-format json`.
+    """
+
+    def __init__(self, claude_bin: str = None):
+        self._bin = claude_bin or shutil.which("claude") or "claude"
+
+    @staticmethod
+    def available() -> bool:
+        """Return True if the claude binary is on PATH."""
+        return shutil.which("claude") is not None
+
+    def chat(
+        self,
+        messages: List[Dict[str, Any]],
+        model: str = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        reasoning_effort: str = "medium",
+        max_tokens: int = 16384,
+        tool_choice: str = "auto",
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Single LLM call via claude CLI. Returns (response_message_dict, usage_dict)."""
+        # Build a single prompt string from the messages list
+        prompt_parts: List[str] = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                # Multipart content — extract text parts only
+                text_bits = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
+                content = "\n".join(text_bits)
+            if role == "system":
+                prompt_parts.append(f"[SYSTEM]\n{content}")
+            elif role == "assistant":
+                prompt_parts.append(f"[ASSISTANT]\n{content}")
+            elif role == "tool":
+                prompt_parts.append(f"[TOOL RESULT]\n{content}")
+            else:
+                prompt_parts.append(content)
+
+        prompt = "\n\n".join(prompt_parts)
+
+        cmd = [self._bin, "-p", "--output-format", "json"]
+        if model:
+            # Strip provider prefix (e.g. "anthropic/claude-sonnet-4.6" → "claude-sonnet-4.6")
+            bare_model = model.split("/", 1)[-1] if "/" in model else model
+            cmd.extend(["--model", bare_model])
+
+        log.info("[CLAUDE CLI] Running: %s (prompt length=%d)", " ".join(cmd[:6]), len(prompt))
+
+        try:
+            result = subprocess.run(
+                cmd,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+        except subprocess.TimeoutExpired:
+            log.error("[CLAUDE CLI] Command timed out after 300s")
+            return {"content": "[claude CLI timed out]", "role": "assistant"}, self._zero_usage()
+        except FileNotFoundError:
+            log.error("[CLAUDE CLI] Binary not found: %s", self._bin)
+            raise RuntimeError(f"claude binary not found at {self._bin}")
+
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()[:500]
+            log.error("[CLAUDE CLI] Exit code %d: %s", result.returncode, stderr)
+            return {"content": f"[claude CLI error: {stderr}]", "role": "assistant"}, self._zero_usage()
+
+        # Parse JSON output
+        raw = result.stdout.strip()
+        try:
+            data = _json.loads(raw)
+        except _json.JSONDecodeError:
+            # Not JSON — treat raw stdout as plain text response
+            return {"content": raw, "role": "assistant"}, self._zero_usage()
+
+        # Extract text from JSON response
+        # Claude CLI JSON output has a "result" field (string) or may vary
+        if isinstance(data, dict):
+            text = data.get("result") or data.get("content") or data.get("text") or raw
+        elif isinstance(data, str):
+            text = data
+        else:
+            text = str(data)
+
+        return {"content": text, "role": "assistant"}, self._zero_usage()
+
+    @staticmethod
+    def _zero_usage() -> Dict[str, Any]:
+        return {
+            "provider": "claude_code",
+            "cost": 0.0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+        }
+
+
 class FallbackLLMClient(LLMClient):
     """Wraps LLMClient with automatic fallback chain.
 
@@ -529,6 +637,11 @@ class FallbackLLMClient(LLMClient):
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
+
+def _probe_claude_cli() -> bool:
+    """Check if the claude CLI binary is available on PATH."""
+    return ClaudeCodeClient.available()
+
 
 def _probe_ollama() -> bool:
     """Check if Ollama is reachable. Returns True if available."""
