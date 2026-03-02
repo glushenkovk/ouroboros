@@ -1,4 +1,8 @@
-"""GitHub tools: issues, comments, reactions."""
+"""GitHub tools: issues, comments, reactions.
+
+Primary: GitHub REST API via requests.
+Fallback: gh CLI (if GITHUB_TOKEN is not set).
+"""
 
 from __future__ import annotations
 
@@ -6,14 +10,89 @@ import json
 import logging
 import os
 import subprocess
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+import requests
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
 log = logging.getLogger(__name__)
 
+_GITHUB_API = "https://api.github.com"
+
+
 # ---------------------------------------------------------------------------
-# Helpers
+# Helpers — REST API (primary)
+# ---------------------------------------------------------------------------
+
+def _get_repo_slug(ctx: ToolContext) -> str:
+    """Return 'owner/repo' from env vars."""
+    user = os.environ.get("GITHUB_USER", "")
+    repo = os.environ.get("GITHUB_REPO", "")
+    if user and repo:
+        return f"{user}/{repo}"
+    # fallback: parse from git remote
+    try:
+        res = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=str(ctx.repo_dir),
+            capture_output=True, text=True, timeout=5,
+        )
+        url = res.stdout.strip()
+        # git@github.com:user/repo.git  or  https://github.com/user/repo.git
+        if "github.com" in url:
+            slug = url.split("github.com")[-1].lstrip(":/").removesuffix(".git")
+            return slug
+    except Exception:
+        pass
+    return "unknown/unknown"
+
+
+def _api_headers() -> Dict[str, str]:
+    token = os.environ.get("GITHUB_TOKEN", "")
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _github_request(
+    method: str,
+    path: str,
+    payload: Optional[Dict] = None,
+    params: Optional[Dict] = None,
+) -> Tuple[int, Optional[Any], Optional[str]]:
+    """Make a GitHub REST API request.
+
+    Returns (status_code, json_data_or_None, error_str_or_None).
+    """
+    url = f"{_GITHUB_API}{path}"
+    try:
+        resp = requests.request(
+            method,
+            url,
+            headers=_api_headers(),
+            json=payload,
+            params={k: v for k, v in (params or {}).items() if v is not None},
+            timeout=20,
+        )
+        if resp.status_code >= 400:
+            msg = resp.json().get("message", resp.text[:200]) if resp.content else resp.reason
+            return resp.status_code, None, f"GitHub API {resp.status_code}: {msg}"
+        return resp.status_code, resp.json() if resp.content else None, None
+    except requests.exceptions.ConnectionError as e:
+        return 0, None, f"Connection error: {e}"
+    except requests.exceptions.Timeout:
+        return 0, None, "Request timed out"
+    except Exception as e:
+        return 0, None, str(e)
+
+
+# ---------------------------------------------------------------------------
+# Helpers — gh CLI (fallback when no GITHUB_TOKEN)
 # ---------------------------------------------------------------------------
 
 def _gh_cmd(args: List[str], ctx: ToolContext, timeout: int = 30, input_data: Optional[str] = None) -> str:
@@ -30,7 +109,6 @@ def _gh_cmd(args: List[str], ctx: ToolContext, timeout: int = 30, input_data: Op
         )
         if res.returncode != 0:
             err = (res.stderr or "").strip()
-            # Only return first line of stderr, truncated to 200 chars for security
             return f"⚠️ GH_ERROR: {err.split(chr(10))[0][:200]}"
         return res.stdout.strip()
     except FileNotFoundError:
@@ -41,23 +119,8 @@ def _gh_cmd(args: List[str], ctx: ToolContext, timeout: int = 30, input_data: Op
         return f"⚠️ GH_ERROR: {e}"
 
 
-def _get_repo_slug(ctx: ToolContext) -> str:
-    """Get 'owner/repo' from git remote."""
-    try:
-        res = subprocess.run(
-            ["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
-            cwd=str(ctx.repo_dir),
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if res.returncode == 0 and res.stdout.strip():
-            return res.stdout.strip()
-    except Exception:
-        log.debug("Failed to get repo slug from gh", exc_info=True)
-    user = os.environ.get("GITHUB_USER", "")
-    repo = os.environ.get("GITHUB_REPO", "")
-    return f"{user}/{repo}"
+def _has_token() -> bool:
+    return bool(os.environ.get("GITHUB_TOKEN", "").strip())
 
 
 # ---------------------------------------------------------------------------
@@ -66,10 +129,43 @@ def _get_repo_slug(ctx: ToolContext) -> str:
 
 def _list_issues(ctx: ToolContext, state: str = "open", labels: str = "", limit: int = 20) -> str:
     """List GitHub issues with optional filters."""
+    limit = min(int(limit), 50)
+
+    if _has_token():
+        slug = _get_repo_slug(ctx)
+        params: Dict[str, Any] = {"state": state, "per_page": limit}
+        if labels:
+            params["labels"] = labels
+        status, data, err = _github_request("GET", f"/repos/{slug}/issues", params=params)
+        if err:
+            return f"⚠️ {err}"
+
+        issues = data or []
+        # Filter out pull requests (GitHub API returns PRs in issues endpoint)
+        issues = [i for i in issues if "pull_request" not in i]
+
+        if not issues:
+            return f"No {state} issues found."
+
+        lines = [f"**{len(issues)} {state} issue(s):**\n"]
+        for issue in issues:
+            labels_str = ", ".join(l.get("name", "") for l in issue.get("labels", []))
+            author = (issue.get("user") or {}).get("login", "unknown")
+            lines.append(
+                f"- **#{issue['number']}** {issue['title']}"
+                f" (by @{author}{', labels: ' + labels_str if labels_str else ''})"
+            )
+            body = (issue.get("body") or "").strip()
+            if body:
+                preview = body[:200] + ("..." if len(body) > 200 else "")
+                lines.append(f"  > {preview}")
+        return "\n".join(lines)
+
+    # fallback: gh CLI
     args = [
         "issue", "list",
         "--state", state,
-        "--limit", str(min(limit, 50)),
+        "--limit", str(limit),
         "--json", "number,title,body,labels,createdAt,author,assignees,state",
     ]
     if labels:
@@ -97,10 +193,8 @@ def _list_issues(ctx: ToolContext, state: str = "open", labels: str = "", limit:
         )
         body = (issue.get("body") or "").strip()
         if body:
-            # Show first 200 chars of body
             preview = body[:200] + ("..." if len(body) > 200 else "")
             lines.append(f"  > {preview}")
-
     return "\n".join(lines)
 
 
@@ -109,6 +203,40 @@ def _get_issue(ctx: ToolContext, number: int) -> str:
     if number <= 0:
         return "⚠️ issue number must be positive"
 
+    if _has_token():
+        slug = _get_repo_slug(ctx)
+
+        status, issue, err = _github_request("GET", f"/repos/{slug}/issues/{number}")
+        if err:
+            return f"⚠️ {err}"
+
+        _, comments_data, _ = _github_request("GET", f"/repos/{slug}/issues/{number}/comments")
+        comments = comments_data or []
+
+        labels_str = ", ".join(l.get("name", "") for l in issue.get("labels", []))
+        author = (issue.get("user") or {}).get("login", "unknown")
+
+        lines = [
+            f"## Issue #{issue['number']}: {issue['title']}",
+            f"**State:** {issue['state']}  |  **Author:** @{author}",
+        ]
+        if labels_str:
+            lines.append(f"**Labels:** {labels_str}")
+
+        body = (issue.get("body") or "").strip()
+        if body:
+            lines.append(f"\n**Body:**\n{body[:3000]}")
+
+        if comments:
+            lines.append(f"\n**Comments ({len(comments)}):**")
+            for c in comments[:10]:
+                c_author = (c.get("user") or {}).get("login", "unknown")
+                c_body = (c.get("body") or "").strip()[:500]
+                lines.append(f"\n@{c_author}:\n{c_body}")
+
+        return "\n".join(lines)
+
+    # fallback: gh CLI
     args = [
         "issue", "view", str(number),
         "--json", "number,title,body,labels,createdAt,author,assignees,state,comments",
@@ -140,7 +268,7 @@ def _get_issue(ctx: ToolContext, number: int) -> str:
     comments = issue.get("comments", [])
     if comments:
         lines.append(f"\n**Comments ({len(comments)}):**")
-        for c in comments[:10]:  # limit to 10 most recent
+        for c in comments[:10]:
             c_author = c.get("author", {}).get("login", "unknown")
             c_body = (c.get("body") or "").strip()[:500]
             lines.append(f"\n@{c_author}:\n{c_body}")
@@ -152,11 +280,20 @@ def _comment_on_issue(ctx: ToolContext, number: int, body: str) -> str:
     """Add a comment to an issue."""
     if number <= 0:
         return "⚠️ issue number must be positive"
-
     if not body or not body.strip():
         return "⚠️ Comment body cannot be empty."
 
-    # Pass body via stdin to prevent argument injection
+    if _has_token():
+        slug = _get_repo_slug(ctx)
+        status, data, err = _github_request(
+            "POST", f"/repos/{slug}/issues/{number}/comments",
+            payload={"body": body},
+        )
+        if err:
+            return f"⚠️ {err}"
+        return f"✅ Comment added to issue #{number}."
+
+    # fallback: gh CLI
     args = ["issue", "comment", str(number), "--body-file", "-"]
     raw = _gh_cmd(args, ctx, input_data=body)
     if raw.startswith("⚠️"):
@@ -170,11 +307,21 @@ def _close_issue(ctx: ToolContext, number: int, comment: str = "") -> str:
         return "⚠️ issue number must be positive"
 
     if comment and comment.strip():
-        # Add comment first
         result = _comment_on_issue(ctx, number, comment)
         if result.startswith("⚠️"):
             return result
 
+    if _has_token():
+        slug = _get_repo_slug(ctx)
+        status, data, err = _github_request(
+            "PATCH", f"/repos/{slug}/issues/{number}",
+            payload={"state": "closed"},
+        )
+        if err:
+            return f"⚠️ {err}"
+        return f"✅ Issue #{number} closed."
+
+    # fallback: gh CLI
     args = ["issue", "close", str(number)]
     raw = _gh_cmd(args, ctx)
     if raw.startswith("⚠️"):
@@ -187,25 +334,35 @@ def _create_issue(ctx: ToolContext, title: str, body: str = "", labels: str = ""
     if not title or not title.strip():
         return "⚠️ Issue title cannot be empty."
 
-    # Use --flag=value form to prevent argument injection
+    if _has_token():
+        slug = _get_repo_slug(ctx)
+        payload: Dict[str, Any] = {"title": title}
+        if body:
+            payload["body"] = body
+        if labels:
+            payload["labels"] = [l.strip() for l in labels.split(",") if l.strip()]
+        status, data, err = _github_request("POST", f"/repos/{slug}/issues", payload=payload)
+        if err:
+            return f"⚠️ {err}"
+        url = data.get("html_url", "") if data else ""
+        num = data.get("number", "?") if data else "?"
+        return f"✅ Issue #{num} created: {url}"
+
+    # fallback: gh CLI
+    import re
     args = ["issue", "create", f"--title={title}"]
     if body:
-        # Pass body via stdin to prevent argument injection
         args.append("--body-file=-")
         raw = _gh_cmd(args, ctx, input_data=body)
     else:
         raw = _gh_cmd(args, ctx)
 
-    if labels:
-        # For existing issue, add labels separately
-        if not raw.startswith("⚠️"):
-            # Extract issue number from URL in raw output
-            import re
-            match = re.search(r'/issues/(\d+)', raw)
-            if match:
-                issue_num = int(match.group(1))
-                label_args = ["issue", "edit", str(issue_num), f"--add-label={labels}"]
-                _gh_cmd(label_args, ctx)
+    if labels and not raw.startswith("⚠️"):
+        match = re.search(r'/issues/(\d+)', raw)
+        if match:
+            issue_num = int(match.group(1))
+            label_args = ["issue", "edit", str(issue_num), f"--add-label={labels}"]
+            _gh_cmd(label_args, ctx)
 
     if raw.startswith("⚠️"):
         return raw
