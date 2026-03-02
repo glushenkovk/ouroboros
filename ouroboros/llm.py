@@ -293,3 +293,184 @@ class LLMClient:
         if light and light != main and light != code:
             models.append(light)
         return models
+
+
+# ---------------------------------------------------------------------------
+# Ollama fallback client
+# ---------------------------------------------------------------------------
+
+class OllamaClient:
+    """Wraps Ollama's OpenAI-compatible API for local LLM inference."""
+
+    DEFAULT_HOST = "192.168.1.130:11434"
+
+    def __init__(self, host: str = None):
+        self._host = host or os.environ.get("OLLAMA_HOST", self.DEFAULT_HOST)
+        # Ensure host has scheme
+        if not self._host.startswith("http"):
+            self._host = f"http://{self._host}"
+        self._client = None
+
+    def _get_client(self):
+        if self._client is None:
+            from openai import OpenAI
+            self._client = OpenAI(
+                base_url=f"{self._host}/v1",
+                api_key="ollama",  # Ollama doesn't need a real key
+            )
+        return self._client
+
+    @staticmethod
+    def _map_model(model: str) -> str:
+        """Map cloud model names to local Ollama models."""
+        if model.startswith("anthropic/"):
+            return "qwen2.5:32b"
+        if model.startswith("google/") or model.startswith("openai/"):
+            return "qwen2.5:14b"
+        return model
+
+    def chat(
+        self,
+        messages: List[Dict[str, Any]],
+        model: str,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        reasoning_effort: str = "medium",
+        max_tokens: int = 16384,
+        tool_choice: str = "auto",
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Single LLM call via Ollama. Returns (response_message_dict, usage_dict)."""
+        client = self._get_client()
+        mapped_model = self._map_model(model)
+        log.info("[LOCAL LLM] Using Ollama at %s with model %s", self._host, mapped_model)
+
+        kwargs: Dict[str, Any] = {
+            "model": mapped_model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+        }
+        if tools:
+            # Strip cache_control from tools — Ollama doesn't support it
+            clean_tools = []
+            for t in tools:
+                t_copy = {k: v for k, v in t.items() if k != "cache_control"}
+                clean_tools.append(t_copy)
+            kwargs["tools"] = clean_tools
+            try:
+                kwargs["tool_choice"] = tool_choice
+            except Exception:
+                pass  # Ollama may not support tool_choice
+
+        resp = client.chat.completions.create(**kwargs)
+        resp_dict = resp.model_dump()
+        usage = resp_dict.get("usage") or {}
+        choices = resp_dict.get("choices") or [{}]
+        msg = (choices[0] if choices else {}).get("message") or {}
+
+        # Cost is always 0 for local inference
+        usage["cost"] = 0.0
+
+        return msg, usage
+
+
+class FallbackLLMClient(LLMClient):
+    """Wraps LLMClient with automatic Ollama fallback."""
+
+    def __init__(
+        self,
+        llm: LLMClient,
+        ollama: OllamaClient,
+        budget_remaining_fn: callable = None,
+    ):
+        # We don't call super().__init__() — we delegate to the wrapped llm
+        self._llm = llm
+        self._ollama = ollama
+        self._budget_remaining_fn = budget_remaining_fn
+
+    def chat(
+        self,
+        messages: List[Dict[str, Any]],
+        model: str,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        reasoning_effort: str = "medium",
+        max_tokens: int = 16384,
+        tool_choice: str = "auto",
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        # Check budget before even trying
+        if self._budget_remaining_fn is not None:
+            remaining = self._budget_remaining_fn()
+            if remaining <= 0:
+                reason = f"budget exhausted (remaining={remaining})"
+                log.warning("[FALLBACK] Switching to local Ollama: %s", reason)
+                return self._ollama.chat(
+                    messages=messages, model=model, tools=tools,
+                    reasoning_effort=reasoning_effort, max_tokens=max_tokens,
+                    tool_choice=tool_choice,
+                )
+
+        try:
+            return self._llm.chat(
+                messages=messages, model=model, tools=tools,
+                reasoning_effort=reasoning_effort, max_tokens=max_tokens,
+                tool_choice=tool_choice,
+            )
+        except Exception as exc:
+            exc_str = str(exc).lower()
+            if "402" in exc_str or "insufficient_funds" in exc_str or "credits" in exc_str:
+                reason = "insufficient credits (HTTP 402)"
+            else:
+                reason = f"{type(exc).__name__}: {exc}"
+            log.warning("[FALLBACK] Switching to local Ollama: %s", reason)
+            return self._ollama.chat(
+                messages=messages, model=model, tools=tools,
+                reasoning_effort=reasoning_effort, max_tokens=max_tokens,
+                tool_choice=tool_choice,
+            )
+
+    # Delegate non-chat methods to the wrapped LLMClient
+    def vision_query(self, *args, **kwargs):
+        return self._llm.vision_query(*args, **kwargs)
+
+    def default_model(self) -> str:
+        return self._llm.default_model()
+
+    def available_models(self) -> List[str]:
+        return self._llm.available_models()
+
+
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
+
+def create_llm_client(budget_remaining_fn: callable = None) -> LLMClient:
+    """Create an LLMClient, optionally wrapped with Ollama fallback."""
+    llm = LLMClient()
+
+    # Check if Ollama is available
+    ollama_host = os.environ.get("OLLAMA_HOST", OllamaClient.DEFAULT_HOST)
+    if not ollama_host.startswith("http"):
+        ollama_url = f"http://{ollama_host}"
+    else:
+        ollama_url = ollama_host
+
+    ollama_available = False
+    if os.environ.get("OLLAMA_HOST"):
+        # Explicit config — assume available
+        ollama_available = True
+        log.info("Ollama host configured via OLLAMA_HOST=%s", ollama_host)
+    else:
+        # Probe default host
+        try:
+            import requests
+            resp = requests.head(f"{ollama_url}/", timeout=1)
+            ollama_available = resp.status_code < 500
+            log.info("Ollama probe at %s: status %s", ollama_url, resp.status_code)
+        except Exception:
+            log.debug("Ollama not reachable at %s", ollama_url)
+
+    if ollama_available:
+        ollama = OllamaClient(host=ollama_host)
+        log.info("LLM client created with Ollama fallback (%s)", ollama_host)
+        return FallbackLLMClient(llm, ollama, budget_remaining_fn)
+
+    log.info("LLM client created without Ollama fallback")
+    return llm

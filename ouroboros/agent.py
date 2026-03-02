@@ -26,7 +26,7 @@ from ouroboros.utils import (
     safe_relpath, truncate_for_log,
     get_git_info, sanitize_task_for_event,
 )
-from ouroboros.llm import LLMClient, add_usage
+from ouroboros.llm import LLMClient, add_usage, create_llm_client
 from ouroboros.tools import ToolRegistry
 from ouroboros.tools.registry import ToolContext
 from ouroboros.memory import Memory
@@ -79,11 +79,21 @@ class OuroborosAgent:
         self._task_started_ts: float = 0.0
 
         # SSOT modules
-        self.llm = LLMClient()
+        self.llm = create_llm_client(
+            budget_remaining_fn=lambda: float(os.environ.get("TOTAL_BUDGET", "0")) - self._get_spent_usd()
+        )
         self.tools = ToolRegistry(repo_dir=env.repo_dir, drive_root=env.drive_root)
         self.memory = Memory(drive_root=env.drive_root, repo_dir=env.repo_dir)
 
         self._log_worker_boot_once()
+
+    def _get_spent_usd(self) -> float:
+        try:
+            state_path = self.env.drive_path("state") / "state.json"
+            data = json.loads(read_text(state_path))
+            return float(data.get("spent_usd", 0))
+        except Exception:
+            return 0.0
 
     def inject_message(self, text: str) -> None:
         """Thread-safe: inject owner message into the active conversation."""
