@@ -104,8 +104,8 @@ CFG = {
     "GITHUB_USER": "YOUR_GITHUB_USERNAME",                       # <-- CHANGE THIS
     "GITHUB_REPO": "ouroboros",                                  # <-- repo name (after fork)
     # Models
-    "OUROBOROS_MODEL": "anthropic/claude-sonnet-4.6",            # primary LLM (via OpenRouter)
-    "OUROBOROS_MODEL_CODE": "anthropic/claude-sonnet-4.6",       # code editing (Claude Code CLI)
+    "OUROBOROS_MODEL": "google/gemini-2.5-flash-preview-05-20",   # primary LLM (via OpenRouter)
+    "OUROBOROS_MODEL_CODE": "google/gemini-2.5-flash-preview-05-20", # code editing (Claude Code CLI)
     "OUROBOROS_MODEL_LIGHT": "google/gemini-3-pro-preview",      # consciousness + lightweight tasks
     "OUROBOROS_WEBSEARCH_MODEL": "gpt-5",                        # web search (OpenAI Responses API)
     # Fallback chain (first model != active will be used on empty response)
@@ -197,8 +197,8 @@ Full text: [BIBLE.md](BIBLE.md)
 |----------|---------|-------------|
 | `GITHUB_USER` | *(required in config cell)* | GitHub username |
 | `GITHUB_REPO` | `ouroboros` | GitHub repository name |
-| `OUROBOROS_MODEL` | `anthropic/claude-sonnet-4.6` | Primary LLM model (via OpenRouter) |
-| `OUROBOROS_MODEL_CODE` | `anthropic/claude-sonnet-4.6` | Model for code editing tasks |
+| `OUROBOROS_MODEL` | `google/gemini-2.5-flash-preview-05-20` | Primary LLM model (via OpenRouter) |
+| `OUROBOROS_MODEL_CODE` | `google/gemini-2.5-flash-preview-05-20` | Model for code editing tasks |
 | `OUROBOROS_MODEL_LIGHT` | `google/gemini-3-pro-preview` | Model for lightweight tasks (dedup, compaction) |
 | `OUROBOROS_WEBSEARCH_MODEL` | `gpt-5` | Model for web search (OpenAI Responses API) |
 | `OUROBOROS_MAX_WORKERS` | `5` | Maximum number of parallel worker processes |
@@ -225,6 +225,11 @@ Full text: [BIBLE.md](BIBLE.md)
 ---
 
 ## Changelog
+
+### v6.3.1 -- Cost Optimization: Gemini Flash as Default Model
+- **Default model switched** -- `OUROBOROS_MODEL` and `OUROBOROS_MODEL_CODE` now default to `google/gemini-2.5-flash-preview-05-20` (~20x cheaper than claude-sonnet-4.6 for orchestration tasks). Claude Code CLI handles all code work via Max subscription (free).
+- **Fix: VERSION desync** -- `pyproject.toml` bumped to 6.3.0 to match VERSION file.
+- **Pricing table updated** -- `gemini-2.5-flash` variants added to `_MODEL_PRICING_STATIC`.
 
 ### v6.3.0 -- Ollama Fallback + Claude Code CLI as Primary + Per-Provider Budget Tracking
 - **Ollama fallback** -- local LLM at `192.168.1.130:11434` used automatically when OpenRouter budget is exhausted or returns 402. Model mapping: `anthropic/*` → `qwen2.5:32b`, others → `qwen2.5:14b`. Zero cost.
