@@ -691,8 +691,14 @@ class OuroborosAgent:
 
     def _start_typing_indicator_loop(self) -> Optional[threading.Event]:
         """Start background thread that periodically sends typing indicator."""
-        if self._event_queue is None or self._current_chat_id is None:
+        if self._event_queue is None:
+            log.debug("Typing indicator: event_queue is None, not starting")
             return None
+        if self._current_chat_id is None:
+            log.debug("Typing indicator: current_chat_id is None, not starting")
+            return None
+
+        log.info(f"Starting typing indicator loop for chat_id={self._current_chat_id}")
         interval = 5  # Telegram typing indicator expires after ~5-6 seconds
         stop = threading.Event()
 
