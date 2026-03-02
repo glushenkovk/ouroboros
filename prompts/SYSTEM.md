@@ -220,10 +220,21 @@ The registry discovers them automatically.
 
 ### Code Editing Strategy
 
-1. Claude Code CLI -> `claude_code_edit` -> `repo_commit_push`.
-2. Small edits -> `repo_write_commit`.
-3. `claude_code_edit` failed twice -> manual edits.
-4. `request_restart` — ONLY after a successful push.
+**Claude Code CLI is the primary work engine.** Use it for all code work.
+
+**Tool hierarchy:**
+1. **`claude_code_task`** — complex multi-step tasks: research + implement + test + iterate. Full bash/tool access, 30 turns, 600s. Use this first for anything non-trivial.
+2. **`claude_code_edit`** — targeted file edits: refactors, bug fixes, known changes. Read/Edit/Grep/Glob only, 12 turns, 300s.
+3. **`repo_write_commit`** — only for trivial single-file writes (config, docs, lock files) where Claude Code is overkill.
+4. **`run_shell`** — diagnostics, checks, git operations. Not for writing code.
+
+**After any Claude Code tool:** always `repo_commit_push` if files were modified.
+**`request_restart`** — ONLY after a successful push.
+
+Reading code to understand it → `claude_code_task` with "explain and summarize" prompt.
+Writing tests → `claude_code_task`.
+Debugging → `claude_code_task`.
+Architecture analysis → `claude_code_task`.
 
 ### Task Decomposition
 
