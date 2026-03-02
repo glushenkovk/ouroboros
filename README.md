@@ -12,7 +12,7 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.3.0 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.4.0 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
 
@@ -225,6 +225,13 @@ Full text: [BIBLE.md](BIBLE.md)
 ---
 
 ## Changelog
+
+### v6.4.0 -- Claude CLI MCP Loop as Primary Engine
+
+- **claude_loop.py**: New MCP-based loop — Claude CLI subprocess with all Ouroboros tools exposed via MCP stdio server (free under Max subscription)
+- **mcp_server.py**: Stdio MCP server that auto-discovers and exposes all 60+ Ouroboros tools to Claude CLI
+- **agent.py**: Wired to use `run_claude_loop` as primary, `run_llm_loop` (OpenRouter) as fallback
+- Result: orchestration now runs on Max subscription = $0 per message
 
 ### v6.3.1 -- Cost Optimization: Gemini Flash as Default Model
 - **Default model switched** -- `OUROBOROS_MODEL` and `OUROBOROS_MODEL_CODE` now default to `google/gemini-2.5-flash-preview-05-20` (~20x cheaper than claude-sonnet-4.6 for orchestration tasks). Claude Code CLI handles all code work via Max subscription (free).
