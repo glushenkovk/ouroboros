@@ -242,8 +242,7 @@ def run_claude_loop(
         for raw_line in proc.stdout:
             stdout_lines.append(raw_line)
             if '"type":"assistant"' in raw_line or '"type": "assistant"' in raw_line:
-                log.info("Claude CLI progress: assistant turn received")
-                emit_progress("Claude CLI: assistant turn received")
+                log.debug("Claude CLI progress: assistant turn received")
         proc.wait(timeout=600)
     except subprocess.TimeoutExpired:
         proc.kill()

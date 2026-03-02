@@ -110,7 +110,7 @@ def _run_claude_cli(
     claude_bin = shutil.which("claude")
     cmd = [
         claude_bin, "-p", prompt,
-        "--output-format", "json",
+        "--output-format", "stream-json",
         "--max-turns", str(max_turns),
     ]
     if extra_args:
@@ -169,26 +169,59 @@ def _check_uncommitted_changes(repo_dir: pathlib.Path) -> str:
 
 
 def _parse_claude_output(stdout: str, ctx: ToolContext, source: str = "claude_code_edit") -> str:
-    """Parse JSON output and emit cost event, return result string."""
-    try:
-        payload = json.loads(stdout)
-        out: Dict[str, Any] = {
-            "result": payload.get("result", ""),
-            "session_id": payload.get("session_id"),
-        }
-        if isinstance(payload.get("total_cost_usd"), (int, float)):
-            ctx.pending_events.append({
-                "type": "llm_usage",
-                "provider": "claude_code_cli",
-                "usage": {"cost": float(payload["total_cost_usd"])},
-                "source": source,
-                "ts": utc_now_iso(),
-                "category": "task",
-            })
-        return json.dumps(out, ensure_ascii=False, indent=2)
-    except Exception:
-        log.debug("Failed to parse %s JSON output", source, exc_info=True)
-        return stdout
+    """Parse stream-json output and emit cost event, return result string."""
+    # Try to parse stream-json format (JSONL) first
+    final_text = ""
+    total_cost = 0.0
+    num_turns = 0
+    session_id = None
+
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        event_type = event.get("type", "")
+
+        if event_type == "assistant":
+            num_turns += 1
+            message = event.get("message", {})
+            content_blocks = message.get("content", [])
+            for block in content_blocks:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    final_text = block["text"]
+
+        elif event_type == "result":
+            result_text = event.get("result", "")
+            if result_text:
+                final_text = result_text
+            total_cost = float(event.get("total_cost_usd", 0) or 0)
+            num_turns = max(num_turns, int(event.get("num_turns", 0) or 0))
+            session_id = event.get("session_id")
+
+    # Emit cost event if we got one
+    if total_cost > 0:
+        ctx.pending_events.append({
+            "type": "llm_usage",
+            "provider": "claude_code_cli",
+            "usage": {"cost": total_cost},
+            "source": source,
+            "ts": utc_now_iso(),
+            "category": "task",
+        })
+
+    # Format result
+    out: Dict[str, Any] = {
+        "result": final_text or stdout,
+        "session_id": session_id,
+        "num_turns": num_turns,
+        "cost_usd": total_cost,
+    }
+    return json.dumps(out, ensure_ascii=False, indent=2)
 
 
 def _claude_code_edit(ctx: ToolContext, prompt: str, cwd: str = "") -> str:
