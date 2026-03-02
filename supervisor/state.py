@@ -133,6 +133,8 @@ def ensure_state_defaults(st: Dict[str, Any]) -> Dict[str, Any]:
     st.setdefault("spent_tokens_prompt", 0)
     st.setdefault("spent_tokens_completion", 0)
     st.setdefault("spent_tokens_cached", 0)
+    st.setdefault("spent_usd_openrouter", 0.0)
+    st.setdefault("spent_usd_claude_code", 0.0)
     st.setdefault("session_id", uuid.uuid4().hex)
     st.setdefault("current_branch", None)
     st.setdefault("current_sha", None)
@@ -329,6 +331,12 @@ def update_budget_from_usage(usage: Dict[str, Any]) -> None:
         if cost is None:
             cost = 0.0
         st["spent_usd"] = _to_float(st.get("spent_usd") or 0.0) + _to_float(cost)
+        provider = usage.get("provider") if isinstance(usage, dict) else None
+        if provider == "claude_code_cli":
+            st["spent_usd_claude_code"] = float(st.get("spent_usd_claude_code") or 0.0) + _to_float(cost)
+        else:
+            # Default: OpenRouter
+            st["spent_usd_openrouter"] = float(st.get("spent_usd_openrouter") or 0.0) + _to_float(cost)
         rounds = _to_int(usage.get("rounds") if isinstance(usage, dict) else 0, default=1)
         st["spent_calls"] = int(st.get("spent_calls") or 0) + rounds
         st["spent_tokens_prompt"] = _to_int(st.get("spent_tokens_prompt") or 0) + _to_int(
