@@ -378,19 +378,29 @@ class OllamaClient:
         return msg, usage
 
 
-class FallbackLLMClient(LLMClient):
-    """Wraps LLMClient with automatic Ollama fallback."""
+class OpenAIClient:
+    """Native OpenAI API client (direct, not via OpenRouter)."""
 
-    def __init__(
-        self,
-        llm: LLMClient,
-        ollama: OllamaClient,
-        budget_remaining_fn: callable = None,
-    ):
-        # We don't call super().__init__() — we delegate to the wrapped llm
-        self._llm = llm
-        self._ollama = ollama
-        self._budget_remaining_fn = budget_remaining_fn
+    def __init__(self, api_key: Optional[str] = None):
+        self._api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        self._base_url = "https://api.openai.com/v1"
+        self._client = None
+
+    def _get_client(self):
+        if self._client is None:
+            from openai import OpenAI
+            self._client = OpenAI(
+                api_key=self._api_key,
+                base_url=self._base_url,
+            )
+        return self._client
+
+    @staticmethod
+    def _map_model(model: str) -> str:
+        """Strip 'openai/' prefix for native API; pass non-OpenAI models as-is."""
+        if model.startswith("openai/"):
+            return model[len("openai/"):]
+        return model
 
     def chat(
         self,
@@ -401,82 +411,169 @@ class FallbackLLMClient(LLMClient):
         max_tokens: int = 16384,
         tool_choice: str = "auto",
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        # Check budget before even trying
+        """Single LLM call via native OpenAI API."""
+        client = self._get_client()
+        mapped_model = self._map_model(model)
+        log.info("[OPENAI] Using native OpenAI API with model %s", mapped_model)
+
+        kwargs: Dict[str, Any] = {
+            "model": mapped_model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+        }
+        if tools:
+            # Strip cache_control from tools — OpenAI native doesn't use it
+            clean_tools = []
+            for t in tools:
+                t_copy = {k: v for k, v in t.items() if k != "cache_control"}
+                clean_tools.append(t_copy)
+            kwargs["tools"] = clean_tools
+            kwargs["tool_choice"] = tool_choice
+
+        resp = client.chat.completions.create(**kwargs)
+        resp_dict = resp.model_dump()
+        usage = resp_dict.get("usage") or {}
+        choices = resp_dict.get("choices") or [{}]
+        msg = (choices[0] if choices else {}).get("message") or {}
+
+        # Extract cached_tokens from prompt_tokens_details if available
+        if not usage.get("cached_tokens"):
+            prompt_details = usage.get("prompt_tokens_details") or {}
+            if isinstance(prompt_details, dict) and prompt_details.get("cached_tokens"):
+                usage["cached_tokens"] = int(prompt_details["cached_tokens"])
+
+        # Tag provider for per-provider budget tracking (spent_usd_openai)
+        usage["provider"] = "openai"
+
+        return msg, usage
+
+
+class FallbackLLMClient(LLMClient):
+    """Wraps LLMClient with automatic fallback chain.
+
+    Fallback order: primary (OpenRouter) → paid fallbacks (OpenAI) → free fallback (Ollama).
+    On budget exhaustion, skips directly to the free fallback.
+    """
+
+    def __init__(
+        self,
+        primary: LLMClient,
+        fallbacks: List[Any],
+        budget_remaining_fn: callable = None,
+    ):
+        # We don't call super().__init__() — we delegate to the wrapped primary
+        self._primary = primary
+        self._fallbacks = fallbacks  # Ordered list: [OpenAIClient, OllamaClient, ...]
+        self._budget_remaining_fn = budget_remaining_fn
+        # Identify free fallback (Ollama) for budget-exhaustion shortcut
+        self._free_fallback = None
+        for fb in fallbacks:
+            if isinstance(fb, OllamaClient):
+                self._free_fallback = fb
+                break
+
+    def chat(
+        self,
+        messages: List[Dict[str, Any]],
+        model: str,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        reasoning_effort: str = "medium",
+        max_tokens: int = 16384,
+        tool_choice: str = "auto",
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        call_kwargs = dict(
+            messages=messages, model=model, tools=tools,
+            reasoning_effort=reasoning_effort, max_tokens=max_tokens,
+            tool_choice=tool_choice,
+        )
+
+        # Budget exhausted → skip to free fallback (Ollama)
         if self._budget_remaining_fn is not None:
             remaining = self._budget_remaining_fn()
-            if remaining <= 0:
-                reason = f"budget exhausted (remaining={remaining})"
-                log.warning("[FALLBACK] Switching to local Ollama: %s", reason)
-                return self._ollama.chat(
-                    messages=messages, model=model, tools=tools,
-                    reasoning_effort=reasoning_effort, max_tokens=max_tokens,
-                    tool_choice=tool_choice,
-                )
+            if remaining <= 0 and self._free_fallback is not None:
+                log.warning("[FALLBACK] Budget exhausted (remaining=%s), using Ollama", remaining)
+                return self._free_fallback.chat(**call_kwargs)
 
+        # Try primary (OpenRouter)
         try:
-            return self._llm.chat(
-                messages=messages, model=model, tools=tools,
-                reasoning_effort=reasoning_effort, max_tokens=max_tokens,
-                tool_choice=tool_choice,
-            )
+            return self._primary.chat(**call_kwargs)
         except Exception as exc:
             exc_str = str(exc).lower()
             if "402" in exc_str or "insufficient_funds" in exc_str or "credits" in exc_str:
                 reason = "insufficient credits (HTTP 402)"
             else:
                 reason = f"{type(exc).__name__}: {exc}"
-            log.warning("[FALLBACK] Switching to local Ollama: %s", reason)
-            return self._ollama.chat(
-                messages=messages, model=model, tools=tools,
-                reasoning_effort=reasoning_effort, max_tokens=max_tokens,
-                tool_choice=tool_choice,
-            )
+            log.warning("[FALLBACK] Primary (OpenRouter) failed: %s", reason)
 
-    # Delegate non-chat methods to the wrapped LLMClient
+        # Try fallbacks in order (OpenAI → Ollama)
+        for fb in self._fallbacks:
+            try:
+                return fb.chat(**call_kwargs)
+            except Exception as fb_exc:
+                log.warning("[FALLBACK] %s failed: %s", type(fb).__name__, fb_exc)
+                continue
+
+        raise RuntimeError("All LLM providers failed (OpenRouter + fallbacks)")
+
+    # Delegate non-chat methods to the primary LLMClient
     def vision_query(self, *args, **kwargs):
-        return self._llm.vision_query(*args, **kwargs)
+        return self._primary.vision_query(*args, **kwargs)
 
     def default_model(self) -> str:
-        return self._llm.default_model()
+        return self._primary.default_model()
 
     def available_models(self) -> List[str]:
-        return self._llm.available_models()
+        return self._primary.available_models()
 
 
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
-def create_llm_client(budget_remaining_fn: callable = None) -> LLMClient:
-    """Create an LLMClient, optionally wrapped with Ollama fallback."""
-    llm = LLMClient()
-
-    # Check if Ollama is available
+def _probe_ollama() -> bool:
+    """Check if Ollama is reachable. Returns True if available."""
     ollama_host = os.environ.get("OLLAMA_HOST", OllamaClient.DEFAULT_HOST)
     if not ollama_host.startswith("http"):
         ollama_url = f"http://{ollama_host}"
     else:
         ollama_url = ollama_host
 
-    ollama_available = False
     if os.environ.get("OLLAMA_HOST"):
-        # Explicit config — assume available
-        ollama_available = True
         log.info("Ollama host configured via OLLAMA_HOST=%s", ollama_host)
-    else:
-        # Probe default host
-        try:
-            import requests
-            resp = requests.head(f"{ollama_url}/", timeout=1)
-            ollama_available = resp.status_code < 500
-            log.info("Ollama probe at %s: status %s", ollama_url, resp.status_code)
-        except Exception:
-            log.debug("Ollama not reachable at %s", ollama_url)
+        return True
 
-    if ollama_available:
-        ollama = OllamaClient(host=ollama_host)
-        log.info("LLM client created with Ollama fallback (%s)", ollama_host)
-        return FallbackLLMClient(llm, ollama, budget_remaining_fn)
+    try:
+        import requests
+        resp = requests.head(f"{ollama_url}/", timeout=1)
+        available = resp.status_code < 500
+        log.info("Ollama probe at %s: status %s", ollama_url, resp.status_code)
+        return available
+    except Exception:
+        log.debug("Ollama not reachable at %s", ollama_url)
+        return False
 
-    log.info("LLM client created without Ollama fallback")
-    return llm
+
+def create_llm_client(budget_remaining_fn: callable = None) -> LLMClient:
+    """Create an LLMClient with fallback chain: OpenRouter → OpenAI → Ollama."""
+    primary = LLMClient()  # OpenRouter
+    fallbacks = []
+
+    # OpenAI native (if API key is set)
+    openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if openai_key:
+        fallbacks.append(OpenAIClient(api_key=openai_key))
+        log.info("OpenAI native client added to fallback chain")
+
+    # Ollama (local, free)
+    if _probe_ollama():
+        ollama_host = os.environ.get("OLLAMA_HOST", OllamaClient.DEFAULT_HOST)
+        fallbacks.append(OllamaClient(host=ollama_host))
+        log.info("Ollama added to fallback chain (%s)", ollama_host)
+
+    if fallbacks:
+        names = [type(fb).__name__ for fb in fallbacks]
+        log.info("LLM client created with fallback chain: OpenRouter → %s", " → ".join(names))
+        return FallbackLLMClient(primary, fallbacks, budget_remaining_fn)
+
+    log.info("LLM client created without fallbacks")
+    return primary

@@ -31,7 +31,7 @@ from ouroboros.utils import (
     utc_now_iso, read_text, append_jsonl, clip_text,
     truncate_for_log, sanitize_tool_result_for_log, sanitize_tool_args_for_log,
 )
-from ouroboros.llm import LLMClient, DEFAULT_LIGHT_MODEL
+from ouroboros.llm import LLMClient, OllamaClient, DEFAULT_LIGHT_MODEL, _probe_ollama
 
 log = logging.getLogger(__name__)
 
@@ -53,7 +53,14 @@ class BackgroundConsciousness:
         self._event_queue = event_queue
         self._owner_chat_id_fn = owner_chat_id_fn
 
-        self._llm = LLMClient()
+        # Prefer Ollama for background consciousness (free, saves budget)
+        if _probe_ollama():
+            ollama_host = os.environ.get("OLLAMA_HOST", OllamaClient.DEFAULT_HOST)
+            self._llm = OllamaClient(host=ollama_host)
+            log.info("Background consciousness using Ollama at %s", ollama_host)
+        else:
+            self._llm = LLMClient()
+            log.info("Background consciousness using OpenRouter (Ollama not available)")
         self._registry = self._build_registry()
         self._running = False
         self._paused = False
