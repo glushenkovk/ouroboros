@@ -225,6 +225,12 @@ class LLMClient:
                 if cost is not None:
                     usage["cost"] = cost
 
+        # Tag provider for per-provider budget tracking
+        if "api.openai.com" in self._base_url:
+            usage["provider"] = "openai"
+        else:
+            usage["provider"] = "openrouter"
+
         return msg, usage
 
     def vision_query(

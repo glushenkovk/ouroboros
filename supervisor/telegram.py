@@ -383,8 +383,9 @@ def _format_budget_line(st: Dict[str, Any]) -> str:
 
     or_spent = float(st.get("spent_usd_openrouter") or 0.0)
     cc_spent = float(st.get("spent_usd_claude_code") or 0.0)
+    oai_spent = float(st.get("spent_usd_openai") or 0.0)
 
-    breakdown = f"OR: ${or_spent:.4f} | CC: ${cc_spent:.4f}"
+    breakdown = f"OR: ${or_spent:.4f} | CC: ${cc_spent:.4f} | OAI: ${oai_spent:.4f}"
     return f"—\nBudget: ${spent:.4f} / ${total:.2f} ({pct:.2f}%) [{breakdown}] | {branch}@{sha}"
 
 
