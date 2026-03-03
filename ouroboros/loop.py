@@ -624,6 +624,10 @@ def run_llm_loop(
     llm_trace: Dict[str, Any] = {"assistant_notes": [], "tool_calls": []}
     accumulated_usage: Dict[str, Any] = {}
     max_retries = 3
+
+    # Progress timer: emit heartbeat every 30s (background task visibility)
+    start_time = time.time()
+    last_progress_ts = start_time
     # Wire module-level registry ref so tool_discovery handlers work outside run_llm_loop too
     from ouroboros.tools import tool_discovery as _td
     _td.set_registry(tools)
@@ -648,6 +652,13 @@ def run_llm_loop(
     try:
         while True:
             round_idx += 1
+
+            # Emit heartbeat progress every 30s (background task visibility)
+            now = time.time()
+            elapsed = now - start_time
+            if now - last_progress_ts >= 30:
+                emit_progress(f"⏱️ Task running for {int(elapsed)}s, last progress {int(now - last_progress_ts)}s ago. Continuing.")
+                last_progress_ts = now
 
             # Hard limit on rounds to prevent runaway tasks
             if round_idx > MAX_ROUNDS:
