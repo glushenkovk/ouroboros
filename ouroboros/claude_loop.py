@@ -20,6 +20,8 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     AssistantMessage,
     ResultMessage,
+    TextBlock,
+    ToolUseBlock,
     query,
 )
 from ouroboros.mcp_server import create_mcp_bridge
@@ -144,33 +146,29 @@ async def _run_async(
         async for message in query(prompt=prompt_stream, options=options):
             if isinstance(message, AssistantMessage):
                 for block in message.content:
-                    block_type = getattr(block, "type", "")
-                    if block_type == "text":
-                        text = getattr(block, "text", "")
+                    if isinstance(block, TextBlock):
+                        text = block.text or ""
                         if text:
                             final_text = text
                             try:
                                 emit_progress(text[:200])
                             except Exception:
                                 pass
-                    elif block_type == "tool_use":
-                        tool_name = getattr(block, "name", "unknown")
+                    elif isinstance(block, ToolUseBlock):
                         llm_trace["tool_calls"].append({
-                            "name": tool_name,
-                            "id": getattr(block, "id", ""),
+                            "name": block.name or "unknown",
+                            "id": block.id or "",
                         })
 
             elif isinstance(message, ResultMessage):
                 got_result = True
-                result_text = getattr(message, "text", "") or ""
+                # ResultMessage uses 'result' attribute, not 'text'
+                result_text = message.result or ""
                 if result_text:
                     final_text = result_text
 
-                cost = getattr(message, "total_cost_usd", 0) or 0.0
-                num_turns = getattr(message, "num_turns", 0) or 0
-
-                usage["cost"] = cost
-                usage["rounds"] = num_turns
+                usage["cost"] = message.total_cost_usd or 0.0
+                usage["rounds"] = message.num_turns or 0
 
                 msg_usage = getattr(message, "usage", None)
                 if msg_usage and isinstance(msg_usage, dict):
