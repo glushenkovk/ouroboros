@@ -300,9 +300,16 @@ def run_claude_loop(
     # Run async loop -- use new_event_loop (not asyncio.run) for safety in forked workers
     loop = asyncio.new_event_loop()
     try:
+        # Hard timeout via wait_for — fires even if query() blocks without yielding
+        coro = _run_async(user_prompt, options, emit_progress, timeout_seconds)
         text, usage, llm_trace = loop.run_until_complete(
-            _run_async(user_prompt, options, emit_progress, timeout_seconds)
+            asyncio.wait_for(coro, timeout=timeout_seconds)
         )
+    except asyncio.TimeoutError:
+        log.warning("Claude SDK hard timeout after %ds", timeout_seconds)
+        text = f"Session timed out after {timeout_seconds}s (hard limit)."
+        usage = {"cost": 0, "provider": "claude_sdk", "rounds": 0}
+        llm_trace = {"error": "hard_timeout", "provider": "claude_sdk"}
     except Exception as e:
         log.error("Claude SDK loop crashed: %s", e, exc_info=True)
         text = f"Claude SDK loop error: {e}"
