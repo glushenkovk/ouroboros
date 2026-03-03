@@ -214,6 +214,9 @@ async def _run_async(
                     usage["prompt_tokens"] = msg_usage.get("input_tokens", 0)
                     usage["completion_tokens"] = msg_usage.get("output_tokens", 0)
 
+                # Exit immediately — don't wait for SDK cleanup
+                break
+
     except asyncio.CancelledError:
         log.warning("Claude SDK session cancelled after %.0fs", time.monotonic() - start_time)
         if not final_text:
