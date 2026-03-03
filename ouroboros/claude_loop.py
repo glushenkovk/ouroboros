@@ -157,9 +157,14 @@ async def _run_async(
         log.warning("Claude SDK: creating prompt stream...")
         prompt_stream = _make_prompt_stream(prompt)
         log.warning("Claude SDK: starting query() — waiting for first message...")
+        msg_count = 0
         async for message in query(prompt=prompt_stream, options=options):
-            if turn_count == 0 and not got_result:
-                log.warning("Claude SDK: first message received (%.1fs)", time.monotonic() - start_time)
+            msg_count += 1
+            msg_type = type(message).__name__
+            log.warning(
+                "Claude SDK: msg #%d type=%s elapsed=%.1fs",
+                msg_count, msg_type, time.monotonic() - start_time,
+            )
             elapsed = time.monotonic() - start_time
 
             # Safety timeout — abort if session runs too long
