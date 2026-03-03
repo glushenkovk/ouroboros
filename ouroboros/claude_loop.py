@@ -20,6 +20,7 @@ import os
 import pathlib
 import queue
 import subprocess
+import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ouroboros.mcp_server import create_mcp_config
@@ -235,15 +236,56 @@ def run_claude_loop(
             {**llm_trace, "error": "not_found"},
         )
 
-    # Read stdout incrementally, logging progress for assistant events
+    # Read stdout incrementally, emitting progress every 30s
     stdout_lines: List[str] = []
+    last_progress_ts = time.time()
+    assistant_turns = 0
     try:
         assert proc.stdout is not None
-        for raw_line in proc.stdout:
-            stdout_lines.append(raw_line)
-            if '"type":"assistant"' in raw_line or '"type": "assistant"' in raw_line:
-                log.debug("Claude CLI progress: assistant turn received")
-        proc.wait(timeout=600)
+        import select
+        import fcntl
+        # Set non-blocking mode
+        fd = proc.stdout.fileno()
+        flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+        start_time = time.time()
+        while True:
+            # Check if subprocess finished
+            if proc.poll() is not None:
+                # Read any remaining output
+                try:
+                    remaining = proc.stdout.read()
+                    if remaining:
+                        stdout_lines.extend(remaining.splitlines(keepends=True))
+                except Exception:
+                    pass
+                break
+
+            # Check for timeout
+            elapsed = time.time() - start_time
+            if elapsed > 600:
+                raise subprocess.TimeoutExpired(cmd, 600)
+
+            # Try to read stdout (non-blocking)
+            ready, _, _ = select.select([proc.stdout], [], [], 1.0)
+            if ready:
+                try:
+                    line = proc.stdout.readline()
+                    if line:
+                        stdout_lines.append(line)
+                        if '"type":"assistant"' in line or '"type": "assistant"' in line:
+                            assistant_turns += 1
+                            log.debug("Claude CLI progress: assistant turn %d", assistant_turns)
+                except Exception:
+                    pass
+
+            # Emit progress every 30s
+            now = time.time()
+            if now - last_progress_ts >= 30:
+                emit_progress(f"⏱️ Task running for {int(elapsed)}s, last progress {int(now - last_progress_ts)}s ago. Continuing.")
+                last_progress_ts = now
+
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
