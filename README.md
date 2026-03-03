@@ -12,7 +12,7 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.4.0 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.5.0 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
 
@@ -33,7 +33,7 @@ Most AI agents execute tasks. Ouroboros **creates itself.**
 ## Architecture
 
 ```
-Telegram --> colab_launcher.py
+Telegram --> vm_launcher.py
                 |
             supervisor/              (process management)
               state.py              -- state, budget tracking
@@ -45,9 +45,11 @@ Telegram --> colab_launcher.py
                 |
             ouroboros/               (agent core)
               agent.py              -- thin orchestrator
+              claude_loop.py        -- Claude CLI MCP loop (primary, free via Max)
               consciousness.py      -- background thinking loop
               context.py            -- LLM context, prompt caching
-              loop.py               -- tool loop, concurrent execution
+              loop.py               -- OpenRouter tool loop (fallback)
+              mcp_server.py         -- stdio MCP server (60+ tools for Claude CLI)
               tools/                -- plugin registry (auto-discovery)
                 core.py             -- file ops
                 git.py              -- git ops
@@ -58,9 +60,11 @@ Telegram --> colab_launcher.py
                 browser.py          -- Playwright (stealth)
                 review.py           -- multi-model review
               llm.py                -- OpenRouter client
+              llm_cli.py            -- Claude CLI client + pricing
               memory.py             -- scratchpad, identity, chat
               review.py             -- code metrics
               utils.py              -- utilities
+              coffee_rag.py         -- coffee knowledge RAG engine
 ```
 
 ---
@@ -78,12 +82,14 @@ Telegram --> colab_launcher.py
 
 | Key | Required | Where to get it |
 |-----|----------|-----------------|
-| `OPENROUTER_API_KEY` | Yes | [openrouter.ai/keys](https://openrouter.ai/keys) -- Create an account, add credits, generate a key |
+| `OPENROUTER_API_KEY` | No* | [openrouter.ai/keys](https://openrouter.ai/keys) -- Create an account, add credits, generate a key |
 | `TELEGRAM_BOT_TOKEN` | Yes | [@BotFather](https://t.me/BotFather) on Telegram (see Step 1) |
 | `TOTAL_BUDGET` | Yes | Your spending limit in USD (e.g. `50`) |
 | `GITHUB_TOKEN` | Yes | [github.com/settings/tokens](https://github.com/settings/tokens) -- Generate a classic token with `repo` scope |
 | `OPENAI_API_KEY` | No | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) -- Enables web search tool |
 | `ANTHROPIC_API_KEY` | No | [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys) -- Enables Claude Code CLI |
+
+> *With Claude Max/Pro subscription ($20-100/mo), OpenRouter is optional — orchestration runs free via Claude CLI.
 
 ### Step 3: Set Up Google Colab
 
@@ -225,6 +231,18 @@ Full text: [BIBLE.md](BIBLE.md)
 ---
 
 ## Changelog
+
+### v6.5.0 -- Consciousness Stability + UTF-16 Fix
+- **Consciousness backoff reset**: exponential backoff now resets after a successful wakeup cycle (was: grew forever, eventually stopping consciousness)
+- **Events tail in consciousness context**: last 20 events from events.jsonl included in each wakeup for better situational awareness
+- **ThreadPoolExecutor reuse**: consciousness no longer creates a new thread pool on every wakeup
+- **UTF-16 truncation fix**: `split_telegram()` now uses `_tg_utf16_len()` -- emoji and Cyrillic no longer silently truncated in Telegram messages
+- **pyproject.toml sync**: version aligned with VERSION file (Bible P7)
+
+### v6.4.1 -- Module Split: llm.py + llm_cli.py (Bible P5)
+- **Bible P5 compliance**: `llm.py` was 1012 lines (over ~1000 limit). Split into `llm.py` (590 lines, pure OpenRouter client) + `llm_cli.py` (445 lines, Claude CLI logic)
+- **coffee_rag.py**: New RAG engine for `/coffee` command -- synthesizes answers from 5 coffee knowledge files
+- **Background consciousness**: `comment_on_issue` added to tool whitelist
 
 ### v6.4.0 -- Claude CLI MCP Loop as Primary Engine
 
