@@ -64,7 +64,6 @@ Telegram --> vm_launcher.py
               memory.py             -- scratchpad, identity, chat
               review.py             -- code metrics
               utils.py              -- utilities
-              coffee_rag.py         -- coffee knowledge RAG engine
 ```
 
 ---
@@ -241,7 +240,6 @@ Full text: [BIBLE.md](BIBLE.md)
 
 ### v6.4.1 -- Module Split: llm.py + llm_cli.py (Bible P5)
 - **Bible P5 compliance**: `llm.py` was 1012 lines (over ~1000 limit). Split into `llm.py` (590 lines, pure OpenRouter client) + `llm_cli.py` (445 lines, Claude CLI logic)
-- **coffee_rag.py**: New RAG engine for `/coffee` command -- synthesizes answers from 5 coffee knowledge files
 - **Background consciousness**: `comment_on_issue` added to tool whitelist
 
 ### v6.4.0 -- Claude CLI MCP Loop as Primary Engine
