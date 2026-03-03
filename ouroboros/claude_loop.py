@@ -103,13 +103,19 @@ def _is_benign_cleanup_error(exc: BaseException) -> bool:
 # ---------------------------------------------------------------------------
 
 async def _make_prompt_stream(text: str):
-    """Yield a single user message as AsyncIterable.
+    """Yield a single user message then block forever.
 
-    Using AsyncIterable instead of string prompt is REQUIRED when MCP servers
-    are configured. With string prompts, the SDK closes stdin immediately after
-    sending the user message, which races with pending MCP control request
-    handlers (e.g. notifications/initialized). AsyncIterable mode keeps stdin
-    open until the first result is received.
+    Using AsyncIterable is REQUIRED when MCP servers are configured.
+
+    CRITICAL: After yielding the message, we must NOT return. The SDK's
+    stream_input() calls end_input() (closes stdin) when this iterator
+    exhausts OR after a 60-second timeout. Closing stdin kills the MCP
+    transport — all subsequent tool call responses fail with
+    "ProcessTransport is not ready for writing".
+
+    By blocking forever (via an Event that never fires), stream_input()
+    stays in the async-for loop and stdin remains open for the entire
+    session. The SDK cancels this task when the session ends.
     """
     yield {
         "type": "user",
@@ -117,6 +123,8 @@ async def _make_prompt_stream(text: str):
         "message": {"role": "user", "content": text},
         "parent_tool_use_id": None,
     }
+    # Block forever — SDK will cancel this task when session ends
+    await asyncio.Event().wait()
 
 
 async def _run_async(
