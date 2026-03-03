@@ -185,7 +185,7 @@ async def _run_async(
                             "name": tool_name,
                             "id": block.id or "",
                         })
-                        log.info(
+                        log.warning(
                             "Claude SDK turn %d: tool=%s elapsed=%.0fs",
                             turn_count, tool_name, elapsed,
                         )
@@ -223,7 +223,7 @@ async def _run_async(
         llm_trace["assistant_notes"].append(final_text[:320])
 
     total_elapsed = time.monotonic() - start_time
-    log.info(
+    log.warning(
         "Claude SDK result: text_len=%d got_result=%s rounds=%d tools=%d elapsed=%.0fs",
         len(final_text), got_result, usage.get("rounds", 0),
         len(llm_trace.get("tool_calls", [])), total_elapsed,
@@ -292,7 +292,7 @@ def run_claude_loop(
         },
     )
 
-    log.info(
+    log.warning(
         "Starting Claude SDK loop: task=%s model=%s max_turns=%d effort=%s timeout=%ds tools=%d",
         task_id, model, max_turns, options.effort, timeout_seconds, len(tools._entries),
     )
