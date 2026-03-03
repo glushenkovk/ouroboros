@@ -154,8 +154,12 @@ async def _run_async(
     start_time = time.monotonic()
 
     try:
+        log.warning("Claude SDK: creating prompt stream...")
         prompt_stream = _make_prompt_stream(prompt)
+        log.warning("Claude SDK: starting query() — waiting for first message...")
         async for message in query(prompt=prompt_stream, options=options):
+            if turn_count == 0 and not got_result:
+                log.warning("Claude SDK: first message received (%.1fs)", time.monotonic() - start_time)
             elapsed = time.monotonic() - start_time
 
             # Safety timeout — abort if session runs too long
@@ -264,8 +268,11 @@ def run_claude_loop(
     if not user_prompt:
         user_prompt = "Continue with the current task."
 
+    log.warning("Claude SDK: system_prompt=%d chars, user_prompt=%d chars", len(system_prompt), len(user_prompt))
+
     # Create MCP bridge from ToolRegistry
     mcp_bridge = create_mcp_bridge(tools)
+    log.warning("Claude SDK: MCP bridge created")
 
     # Resolve paths
     repo_dir = pathlib.Path(tools._ctx.repo_dir).resolve()
