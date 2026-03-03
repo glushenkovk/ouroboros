@@ -68,6 +68,48 @@ Telegram --> vm_launcher.py
 
 ---
 
+## Quick Start (Local / VM)
+
+If you prefer to run Ouroboros on your own machine or a cloud VM instead of Colab:
+
+### Prerequisites
+- Python 3.10+
+- [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) authenticated with Max/Pro subscription (`claude auth login`)
+- Git
+
+### Setup
+
+```bash
+# 1. Fork the repo on GitHub, then clone your fork
+git clone https://github.com/YOUR_USERNAME/ouroboros.git
+cd ouroboros
+
+# 2. Install dependencies
+pip install -r requirements.txt
+
+# 3. Configure environment
+cp .env.example .env
+# Edit .env: at minimum set TELEGRAM_BOT_TOKEN, TOTAL_BUDGET, GITHUB_TOKEN, GITHUB_USER
+
+# 4. Run
+python vm_launcher.py
+```
+
+On first launch Ouroboros creates its working branches (`ouroboros`, `ouroboros-stable`), sets up its data directory, and sends you a greeting on Telegram.
+
+### Cost Model
+
+| Component | With Claude Max ($100/mo) | OpenRouter only |
+|-----------|--------------------------|------------------|
+| Orchestration (every message) | **Free** | ~$3–10/hr |
+| Code editing (Claude Code) | **Free** | expensive |
+| Background consciousness | **Free** | expensive |
+| Fallback (rare) | ~$0 | primary cost |
+
+> **Bottom line:** With a Claude Max subscription, Ouroboros runs nearly free. Without Max, costs scale quickly—set a conservative `TOTAL_BUDGET` and monitor `/status`.
+
+---
+
 ## Quick Start (Google Colab)
 
 ### Step 1: Create a Telegram Bot
