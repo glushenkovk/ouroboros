@@ -32,7 +32,7 @@ from ouroboros.tools.registry import ToolContext
 from ouroboros.memory import Memory
 from ouroboros.context import build_llm_messages
 from ouroboros.loop import run_llm_loop
-from ouroboros.claude_loop import run_claude_loop, is_claude_cli_available
+from ouroboros.claude_loop import run_claude_loop
 
 
 # ---------------------------------------------------------------------------
@@ -424,50 +424,17 @@ class OuroborosAgent:
                 initial_effort = "medium"
 
             try:
-                # Prefer Claude CLI (free Max subscription) over OpenRouter
-                if is_claude_cli_available():
-                    text, usage, llm_trace = run_claude_loop(
-                        messages=messages,
-                        tools=self.tools,
-                        emit_progress=self._emit_progress,
-                        task_type=task_type_str,
-                        task_id=str(task.get("id") or ""),
-                        budget_remaining_usd=budget_remaining,
-                        event_queue=self._event_queue,
-                        drive_root=self.env.drive_root,
-                    )
-                    # Fallback to OpenRouter if Claude CLI returned an error
-                    if llm_trace.get("error"):
-                        log.warning("Claude CLI failed, falling back to OpenRouter: %s", text[:200])
-                        text, usage, llm_trace = run_llm_loop(
-                            messages=messages,
-                            tools=self.tools,
-                            llm=self.llm,
-                            drive_logs=drive_logs,
-                            emit_progress=self._emit_progress,
-                            incoming_messages=self._incoming_messages,
-                            task_type=task_type_str,
-                            task_id=str(task.get("id") or ""),
-                            budget_remaining_usd=budget_remaining,
-                            event_queue=self._event_queue,
-                            initial_effort=initial_effort,
-                            drive_root=self.env.drive_root,
-                        )
-                else:
-                    text, usage, llm_trace = run_llm_loop(
-                        messages=messages,
-                        tools=self.tools,
-                        llm=self.llm,
-                        drive_logs=drive_logs,
-                        emit_progress=self._emit_progress,
-                        incoming_messages=self._incoming_messages,
-                        task_type=task_type_str,
-                        task_id=str(task.get("id") or ""),
-                        budget_remaining_usd=budget_remaining,
-                        event_queue=self._event_queue,
-                        initial_effort=initial_effort,
-                        drive_root=self.env.drive_root,
-                    )
+                # Claude Agent SDK — free via Max subscription
+                text, usage, llm_trace = run_claude_loop(
+                    messages=messages,
+                    tools=self.tools,
+                    emit_progress=self._emit_progress,
+                    task_type=task_type_str,
+                    task_id=str(task.get("id") or ""),
+                    budget_remaining_usd=budget_remaining,
+                    event_queue=self._event_queue,
+                    drive_root=self.env.drive_root,
+                )
             except Exception as e:
                 tb = traceback.format_exc()
                 append_jsonl(drive_logs / "events.jsonl", {
