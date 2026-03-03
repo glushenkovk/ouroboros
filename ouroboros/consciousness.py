@@ -32,9 +32,10 @@ from ouroboros.utils import (
     truncate_for_log, sanitize_tool_result_for_log, sanitize_tool_args_for_log,
 )
 from ouroboros.llm import (
-    LLMClient, OllamaClient, ClaudeCodeClient, DEFAULT_LIGHT_MODEL,
+    LLMClient, OllamaClient, DEFAULT_LIGHT_MODEL,
     _probe_claude_cli, _probe_ollama,
 )
+from ouroboros.llm_cli import ClaudeCodeClient
 
 log = logging.getLogger(__name__)
 
