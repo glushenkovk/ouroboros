@@ -300,10 +300,13 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any) -> None:
 
     if owner_chat_id and desc:
         # --- Task deduplication (Bible P3: LLM-first, not hardcoded heuristics) ---
-        from supervisor.queue import PENDING, RUNNING
-        dup_id = _find_duplicate_task(desc, PENDING, RUNNING)
+        from supervisor.queue import PENDING
+        # Only check PENDING — RUNNING excluded because schedule_task events
+        # arrive before task_done, so the parent task is still in RUNNING
+        # and LLM dedup falsely flags subtasks as duplicates of their parent.
+        dup_id = _find_duplicate_task(desc, PENDING, {})
         if dup_id:
-            log.info("Rejected duplicate task: new='%s' duplicates='%s'", desc[:100], dup_id)
+            log.warning("Rejected duplicate task: new='%s' duplicates='%s'", desc[:100], dup_id)
             ctx.send_with_budget(int(owner_chat_id), f"⚠️ Task rejected: semantically similar to already active task {dup_id}")
             return
 
@@ -318,6 +321,8 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any) -> None:
         ctx.enqueue_task(task)
         ctx.send_with_budget(int(owner_chat_id), f"🗓️ Scheduled task {tid}: {desc}")
         ctx.persist_queue_snapshot(reason="schedule_task_event")
+    else:
+        log.warning("schedule_task dropped: owner_chat_id=%s desc_len=%d", owner_chat_id, len(desc))
 
 
 def _handle_cancel_task(evt: Dict[str, Any], ctx: Any) -> None:
