@@ -388,7 +388,7 @@ class BackgroundConsciousness:
         "web_search", "repo_read", "repo_list", "drive_read", "drive_list",
         "chat_history",
         # GitHub Issues
-        "list_github_issues", "get_github_issue",
+        "list_github_issues", "get_github_issue", "comment_on_issue",
     })
 
     def _build_registry(self) -> "ToolRegistry":
