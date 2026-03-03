@@ -14,7 +14,7 @@ import logging
 import os
 import pathlib
 import queue
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple
 
 from claude_agent_sdk import (
     ClaudeAgentOptions,
@@ -82,6 +82,23 @@ def _map_effort(task_type: str) -> str:
 # Async core
 # ---------------------------------------------------------------------------
 
+async def _make_prompt_stream(text: str):
+    """Yield a single user message as AsyncIterable.
+
+    Using AsyncIterable instead of string prompt is REQUIRED when MCP servers
+    are configured. With string prompts, the SDK closes stdin immediately after
+    sending the user message, which races with pending MCP control request
+    handlers (e.g. notifications/initialized). AsyncIterable mode keeps stdin
+    open until the first result is received.
+    """
+    yield {
+        "type": "user",
+        "session_id": "",
+        "message": {"role": "user", "content": text},
+        "parent_tool_use_id": None,
+    }
+
+
 async def _run_async(
     prompt: str,
     options: ClaudeAgentOptions,
@@ -104,7 +121,8 @@ async def _run_async(
     }
 
     try:
-        async for message in query(prompt=prompt, options=options):
+        prompt_stream = _make_prompt_stream(prompt)
+        async for message in query(prompt=prompt_stream, options=options):
             if isinstance(message, AssistantMessage):
                 for block in message.content:
                     block_type = getattr(block, "type", "")
