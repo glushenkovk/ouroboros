@@ -14,6 +14,7 @@ import logging
 import os
 import pathlib
 import queue
+import time
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple
 
 from claude_agent_sdk import (
@@ -131,6 +132,7 @@ async def _run_async(
     prompt: str,
     options: ClaudeAgentOptions,
     emit_progress: Callable[[str], None],
+    timeout_seconds: int = 600,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Run claude-agent-sdk query and collect results."""
     final_text = ""
@@ -148,11 +150,26 @@ async def _run_async(
         "rounds": 0,
     }
     got_result = False
+    turn_count = 0
+    start_time = time.monotonic()
 
     try:
         prompt_stream = _make_prompt_stream(prompt)
         async for message in query(prompt=prompt_stream, options=options):
+            elapsed = time.monotonic() - start_time
+
+            # Safety timeout — abort if session runs too long
+            if elapsed > timeout_seconds:
+                log.warning(
+                    "Claude SDK session timeout after %.0fs (%d turns, %d tools)",
+                    elapsed, turn_count, len(llm_trace["tool_calls"]),
+                )
+                if not final_text:
+                    final_text = f"Session timed out after {int(elapsed)}s with {turn_count} turns."
+                break
+
             if isinstance(message, AssistantMessage):
+                turn_count += 1
                 for block in message.content:
                     if isinstance(block, TextBlock):
                         text = block.text or ""
@@ -163,10 +180,15 @@ async def _run_async(
                             except Exception:
                                 pass
                     elif isinstance(block, ToolUseBlock):
+                        tool_name = block.name or "unknown"
                         llm_trace["tool_calls"].append({
-                            "name": block.name or "unknown",
+                            "name": tool_name,
                             "id": block.id or "",
                         })
+                        log.info(
+                            "Claude SDK turn %d: tool=%s elapsed=%.0fs",
+                            turn_count, tool_name, elapsed,
+                        )
 
             elif isinstance(message, ResultMessage):
                 got_result = True
@@ -183,6 +205,10 @@ async def _run_async(
                     usage["prompt_tokens"] = msg_usage.get("input_tokens", 0)
                     usage["completion_tokens"] = msg_usage.get("output_tokens", 0)
 
+    except asyncio.CancelledError:
+        log.warning("Claude SDK session cancelled after %.0fs", time.monotonic() - start_time)
+        if not final_text:
+            final_text = "Session was cancelled."
     except Exception as e:
         if _is_benign_cleanup_error(e):
             # MCP transport cleanup error -- task completed, just log it
@@ -196,10 +222,11 @@ async def _run_async(
     if final_text:
         llm_trace["assistant_notes"].append(final_text[:320])
 
+    total_elapsed = time.monotonic() - start_time
     log.info(
-        "Claude SDK result: text_len=%d got_result=%s rounds=%d tools=%d",
+        "Claude SDK result: text_len=%d got_result=%s rounds=%d tools=%d elapsed=%.0fs",
         len(final_text), got_result, usage.get("rounds", 0),
-        len(llm_trace.get("tool_calls", [])),
+        len(llm_trace.get("tool_calls", [])), total_elapsed,
     )
 
     return final_text, usage, llm_trace
@@ -245,7 +272,8 @@ def run_claude_loop(
 
     # Build SDK options
     model = os.environ.get("OUROBOROS_CLAUDE_MODEL", "sonnet")
-    max_turns = int(os.environ.get("OUROBOROS_MAX_ROUNDS", "200"))
+    max_turns = int(os.environ.get("OUROBOROS_MAX_ROUNDS", "15"))
+    timeout_seconds = int(os.environ.get("OUROBOROS_SDK_TIMEOUT", "600"))
 
     options = ClaudeAgentOptions(
         system_prompt=system_prompt,
@@ -265,15 +293,15 @@ def run_claude_loop(
     )
 
     log.info(
-        "Starting Claude SDK loop: task=%s model=%s max_turns=%d effort=%s tools=%d",
-        task_id, model, max_turns, options.effort, len(tools._entries),
+        "Starting Claude SDK loop: task=%s model=%s max_turns=%d effort=%s timeout=%ds tools=%d",
+        task_id, model, max_turns, options.effort, timeout_seconds, len(tools._entries),
     )
 
     # Run async loop -- use new_event_loop (not asyncio.run) for safety in forked workers
     loop = asyncio.new_event_loop()
     try:
         text, usage, llm_trace = loop.run_until_complete(
-            _run_async(user_prompt, options, emit_progress)
+            _run_async(user_prompt, options, emit_progress, timeout_seconds)
         )
     except Exception as e:
         log.error("Claude SDK loop crashed: %s", e, exc_info=True)
