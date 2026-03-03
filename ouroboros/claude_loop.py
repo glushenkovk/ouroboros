@@ -78,6 +78,24 @@ def _map_effort(task_type: str) -> str:
     return "medium"
 
 
+def _is_benign_cleanup_error(exc: BaseException) -> bool:
+    """Check if an exception is a benign MCP cleanup error.
+
+    The claude-agent-sdk raises ExceptionGroup during session teardown when
+    pending MCP control request handlers try to write to a closing transport.
+    This is expected and harmless -- the task has already completed.
+    """
+    if isinstance(exc, ExceptionGroup):
+        return all(_is_benign_cleanup_error(e) for e in exc.exceptions)
+    exc_type = type(exc).__name__
+    exc_str = str(exc).lower()
+    return (
+        "CLIConnectionError" in exc_type
+        or "not ready for writing" in exc_str
+        or ("transport" in exc_str and "closed" in exc_str)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Async core
 # ---------------------------------------------------------------------------
@@ -119,6 +137,7 @@ async def _run_async(
         "model": options.model or "sonnet",
         "rounds": 0,
     }
+    got_result = False
 
     try:
         prompt_stream = _make_prompt_stream(prompt)
@@ -142,32 +161,40 @@ async def _run_async(
                         })
 
             elif isinstance(message, ResultMessage):
-                # Extract final result
+                got_result = True
                 result_text = getattr(message, "text", "") or ""
                 if result_text:
                     final_text = result_text
 
-                # Extract cost and usage
                 cost = getattr(message, "total_cost_usd", 0) or 0.0
                 num_turns = getattr(message, "num_turns", 0) or 0
 
                 usage["cost"] = cost
                 usage["rounds"] = num_turns
 
-                # Try to get token counts from usage
                 msg_usage = getattr(message, "usage", None)
                 if msg_usage and isinstance(msg_usage, dict):
                     usage["prompt_tokens"] = msg_usage.get("input_tokens", 0)
                     usage["completion_tokens"] = msg_usage.get("output_tokens", 0)
 
     except Exception as e:
-        log.error("Claude SDK query failed: %s", e, exc_info=True)
-        llm_trace["error"] = str(e)
-        if not final_text:
-            final_text = f"Claude SDK error: {e}"
+        if _is_benign_cleanup_error(e):
+            # MCP transport cleanup error -- task completed, just log it
+            log.warning("Claude SDK cleanup error (benign): %s", e)
+        else:
+            log.error("Claude SDK query failed: %s", e, exc_info=True)
+            llm_trace["error"] = str(e)
+            if not final_text:
+                final_text = f"Claude SDK error: {e}"
 
     if final_text:
         llm_trace["assistant_notes"].append(final_text[:320])
+
+    log.info(
+        "Claude SDK result: text_len=%d got_result=%s rounds=%d tools=%d",
+        len(final_text), got_result, usage.get("rounds", 0),
+        len(llm_trace.get("tool_calls", [])),
+    )
 
     return final_text, usage, llm_trace
 
@@ -236,7 +263,7 @@ def run_claude_loop(
         task_id, model, max_turns, options.effort, len(tools._entries),
     )
 
-    # Run async loop — use new_event_loop (not asyncio.run) for safety in forked workers
+    # Run async loop -- use new_event_loop (not asyncio.run) for safety in forked workers
     loop = asyncio.new_event_loop()
     try:
         text, usage, llm_trace = loop.run_until_complete(

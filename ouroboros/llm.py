@@ -500,9 +500,11 @@ class ClaudeCodeClient:
 
         cmd = [self._bin, "-p", "--output-format", "json"]
         if model:
-            # Strip provider prefix (e.g. "anthropic/claude-sonnet-4.6" → "claude-sonnet-4.6")
             bare_model = model.split("/", 1)[-1] if "/" in model else model
-            cmd.extend(["--model", bare_model])
+            # Only pass --model for Claude models; ignore non-Claude model names
+            # (e.g. gemini, gpt) since Claude CLI only supports Claude models
+            if "claude" in bare_model.lower() or bare_model in ("sonnet", "opus", "haiku"):
+                cmd.extend(["--model", bare_model])
 
         log.info("[CLAUDE CLI] Running: %s (prompt length=%d)", " ".join(cmd[:6]), len(prompt))
 
