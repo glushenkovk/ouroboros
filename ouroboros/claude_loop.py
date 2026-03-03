@@ -152,6 +152,8 @@ async def _run_async(
     got_result = False
     turn_count = 0
     start_time = time.monotonic()
+    last_progress_ts = 0.0
+    PROGRESS_MIN_INTERVAL = 15  # seconds between progress messages
 
     try:
         prompt_stream = _make_prompt_stream(prompt)
@@ -175,10 +177,13 @@ async def _run_async(
                         text = block.text or ""
                         if text:
                             final_text = text
-                            try:
-                                emit_progress(text[:200])
-                            except Exception:
-                                pass
+                            # Throttle progress messages — avoid duplicate for short tasks
+                            if elapsed - last_progress_ts >= PROGRESS_MIN_INTERVAL:
+                                last_progress_ts = elapsed
+                                try:
+                                    emit_progress(text[:200])
+                                except Exception:
+                                    pass
                     elif isinstance(block, ToolUseBlock):
                         tool_name = block.name or "unknown"
                         llm_trace["tool_calls"].append({
