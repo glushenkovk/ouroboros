@@ -143,7 +143,7 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
             result_data = {
                 "task_id": task_id,
                 "status": "completed",
-                "result": "",
+                "result": evt.get("result", ""),
                 "cost_usd": float(evt.get("cost_usd", 0)),
                 "ts": evt.get("ts", ""),
             }
