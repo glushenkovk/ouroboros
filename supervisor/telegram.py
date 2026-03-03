@@ -171,17 +171,27 @@ class TelegramClient:
 # ---------------------------------------------------------------------------
 
 def split_telegram(text: str, limit: int = 3800) -> List[str]:
+    """Split text into chunks <= limit UTF-16 code units (Telegram counting method)."""
     chunks: List[str] = []
     s = text
-    while len(s) > limit:
-        cut = s.rfind("\n", 0, limit)
-        if cut < 100:
-            cut = limit
-        chunks.append(s[:cut])
-        s = s[cut:]
+    while _tg_utf16_len(s) > limit:
+        # Find char index where UTF-16 count reaches limit
+        utf16_count = 0
+        cut_chars = 0
+        for ch in s:
+            ch_len = 2 if ord(ch) > 0xFFFF else 1
+            if utf16_count + ch_len > limit:
+                break
+            utf16_count += ch_len
+            cut_chars += 1
+        # Try to cut at last newline for cleaner splits
+        last_nl = s.rfind("\n", 0, cut_chars)
+        if last_nl >= 100:
+            cut_chars = last_nl
+        chunks.append(s[:cut_chars])
+        s = s[cut_chars:]
     chunks.append(s)
     return chunks
-
 
 def _sanitize_telegram_text(text: str) -> str:
     if text is None:
