@@ -537,6 +537,7 @@ class FallbackLLMClient(LLMClient):
 
 def _probe_claude_cli() -> bool:
     """Check if the claude CLI binary is available on PATH."""
+    from ouroboros.llm_cli import ClaudeCodeClient
     return ClaudeCodeClient.available()
 
 
