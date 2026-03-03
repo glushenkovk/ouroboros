@@ -44,6 +44,7 @@ class BackgroundConsciousness:
     """Persistent background thinking loop for Ouroboros."""
 
     _MAX_BG_ROUNDS = 5
+    _DEFAULT_WAKEUP_SEC: float = 300.0
 
     def __init__(
         self,
@@ -74,9 +75,14 @@ class BackgroundConsciousness:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._wakeup_event = threading.Event()
-        self._next_wakeup_sec: float = 300.0
+        self._next_wakeup_sec: float = self._DEFAULT_WAKEUP_SEC
         self._observations: queue.Queue = queue.Queue()
         self._deferred_events: list = []
+
+        # Persistent executor for tool calls (avoid per-call overhead)
+        self._tool_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="bg-tool"
+        )
 
         # Budget tracking
         self._bg_spent_usd: float = 0.0
@@ -159,6 +165,9 @@ class BackgroundConsciousness:
 
             try:
                 self._think()
+                # Reset backoff after successful think
+                if self._next_wakeup_sec > self._DEFAULT_WAKEUP_SEC:
+                    self._next_wakeup_sec = self._DEFAULT_WAKEUP_SEC
             except Exception as e:
                 append_jsonl(self._drive_root / "logs" / "events.jsonl", {
                     "ts": utc_now_iso(),
@@ -332,6 +341,28 @@ class BackgroundConsciousness:
             parts.append("## Scratchpad\n\n" + clip_text(
                 read_text(scratchpad_path), 8000))
 
+
+        # Recent events tail (last 15 meaningful events for context)
+        events_path = self._drive_root / "logs" / "events.jsonl"
+        if events_path.exists():
+            try:
+                lines = read_text(events_path).strip().splitlines()[-30:]
+                relevant = []
+                skip_types = {"llm_usage", "consciousness_thought", "heartbeat"}
+                for line in lines:
+                    try:
+                        evt = json.loads(line)
+                        if evt.get("type") not in skip_types:
+                            relevant.append(
+                                f"[{evt.get('ts','?')[:19]}] {evt.get('type','?')}: {str(evt)[:120]}"
+                            )
+                    except Exception:
+                        pass
+                if relevant:
+                    parts.append("## Recent Events\n\n" + "\n".join(relevant[-15:]))
+            except Exception:
+                pass
+
         # Dialogue summary for continuity
         summary_path = self._drive_root / "memory" / "dialogue_summary.md"
         if summary_path.exists():
@@ -449,18 +480,17 @@ class BackgroundConsciousness:
                 error = e
 
         # Execute with timeout using ThreadPoolExecutor
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(_run_tool)
-            try:
-                future.result(timeout=timeout_sec)
-            except concurrent.futures.TimeoutError:
-                result = f"[TIMEOUT after {timeout_sec}s]"
-                append_jsonl(self._drive_root / "logs" / "events.jsonl", {
-                    "ts": utc_now_iso(),
-                    "type": "consciousness_tool_timeout",
-                    "tool": fn_name,
-                    "timeout_sec": timeout_sec,
-                })
+        future = self._tool_executor.submit(_run_tool)
+        try:
+            future.result(timeout=timeout_sec)
+        except concurrent.futures.TimeoutError:
+            result = f"[TIMEOUT after {timeout_sec}s]"
+            append_jsonl(self._drive_root / "logs" / "events.jsonl", {
+                "ts": utc_now_iso(),
+                "type": "consciousness_tool_timeout",
+                "tool": fn_name,
+                "timeout_sec": timeout_sec,
+            })
 
         # Handle errors
         if error is not None:
