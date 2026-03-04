@@ -186,7 +186,7 @@ async def _handle_chat_ui(request):
             date_fmt = ""
 
         # Ouroboros = right side (me), others = left side (them)
-        is_me = sender.lower() in ("ouroboros", "me", "self")
+        is_me = sender.lower() in ("ouroboros", "me", "self") or msg.get("direction") == "outgoing"
         side_class = "me" if is_me else "them"
 
         safe_text = html_module.escape(text).replace("\n", "<br>")
@@ -470,6 +470,14 @@ async def _handle_message(request):
         body = await request.json()
         sender = str(body.get("from", "unknown"))
         text = str(body.get("text", ""))
+
+        # Echo detection: drop messages that mirror our own recently sent texts
+        recent = _read_messages()[-30:]
+        sent_texts = {m["text"] for m in recent if m.get("direction") == "outgoing" or m.get("from") == "ouroboros"}
+        if text in sent_texts:
+            log.debug("Echo detected from %s, dropping", sender)
+            return web.json_response({"ok": True, "message_id": None, "echo": True})
+
         msg = {
             "id": str(uuid.uuid4()),
             "from": sender,

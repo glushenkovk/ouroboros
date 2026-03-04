@@ -236,6 +236,7 @@ def _send_agent_message(ctx: ToolContext, to_host: str, text: str, reply_to: str
             "from": "ouroboros",
             "to": recipient,
             "text": text,
+            "direction": "outgoing",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "read": True,
         }
