@@ -22,6 +22,7 @@ import logging
 import os
 import pathlib
 import queue
+from ouroboros.agent_inbox import pop_unread_messages
 import threading
 import time
 import traceback
@@ -380,6 +381,20 @@ class BackgroundConsciousness:
         if observations:
             parts.append("## Recent observations\n\n" + "\n".join(
                 f"- {o}" for o in observations[-10:]))
+
+        # Agent inbox -- messages from AgentOS and other agents
+        try:
+            unread = pop_unread_messages()
+            if unread:
+                inbox_lines = []
+                for msg in unread[-10:]:
+                    ts = msg.get("timestamp", "")[:19]
+                    sender = msg.get("from", "?")
+                    text = msg.get("text", "")
+                    inbox_lines.append(f"[{ts}] {sender}: {text}")
+                parts.append("## Agent Inbox (unread messages)\n\n" + "\n".join(inbox_lines))
+        except Exception as e:
+            log.debug("Failed to read agent inbox: %s", e)
 
         # Runtime info + state
         runtime_lines = [f"UTC: {utc_now_iso()}"]

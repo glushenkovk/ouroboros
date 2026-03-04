@@ -33,6 +33,7 @@ from ouroboros.memory import Memory
 from ouroboros.context import build_llm_messages
 from ouroboros.loop import run_llm_loop
 from ouroboros.claude_loop import run_claude_loop
+from ouroboros.agent_inbox import start_inbox_server_background
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +88,11 @@ class OuroborosAgent:
         self.memory = Memory(drive_root=env.drive_root, repo_dir=env.repo_dir)
 
         self._log_worker_boot_once()
+
+        # Start inter-agent inbox HTTP server (port 9191)
+        if os.environ.get("OUROBOROS_INBOX_STARTED") != "1":
+            os.environ["OUROBOROS_INBOX_STARTED"] = "1"
+            start_inbox_server_background()
 
     def _get_spent_usd(self) -> float:
         try:
