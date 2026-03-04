@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import urllib.request
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List
@@ -206,6 +207,26 @@ def _wait_for_task(ctx: ToolContext, task_id: str) -> str:
     return f"Task {task_id}: still running. Call again later to check."
 
 
+def _send_agent_message(ctx: ToolContext, to_host: str, text: str, reply_to: str = "") -> str:
+    """Send a message to another agent's HTTP inbox server."""
+    url = f"http://{to_host}/message"
+    payload: Dict[str, Any] = {"from": "ouroboros", "text": text}
+    if reply_to:
+        payload["reply_to"] = reply_to
+    data = json.dumps(payload).encode("utf-8")
+    try:
+        req = urllib.request.Request(
+            url, data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read().decode("utf-8")
+            return f"Sent to {to_host}: {body}"
+    except Exception as e:
+        return f"Error sending to {to_host}: {e}"
+
+
 def get_tools() -> List[ToolEntry]:
     return [
         ToolEntry("request_restart", {
@@ -313,4 +334,14 @@ def get_tools() -> List[ToolEntry]:
                 "task_id": {"type": "string", "description": "Task ID to check"},
             }},
         }, _wait_for_task),
+        ToolEntry("send_agent_message", {
+            "name": "send_agent_message",
+            "description": "Send a message to another agent's inbox server (e.g. AgentOS at 192.168.1.121:9191). "
+                           "Use to reply to inter-agent messages or initiate conversation.",
+            "parameters": {"type": "object", "required": ["to_host", "text"], "properties": {
+                "to_host": {"type": "string", "description": "Host:port of the agent inbox (e.g. '192.168.1.121:9191')"},
+                "text": {"type": "string", "description": "Message text to send"},
+                "reply_to": {"type": "string", "description": "Optional: message ID being replied to"},
+            }},
+        }, _send_agent_message),
     ]
