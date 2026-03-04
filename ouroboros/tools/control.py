@@ -209,7 +209,11 @@ def _wait_for_task(ctx: ToolContext, task_id: str) -> str:
 
 def _send_agent_message(ctx: ToolContext, to_host: str, text: str, reply_to: str = "") -> str:
     """Send a message to another agent's HTTP inbox server."""
-    url = f"http://{to_host}/message"
+    # If to_host contains a path component, use as-is; otherwise append /message
+    if "/" in to_host:
+        url = f"http://{to_host}"
+    else:
+        url = f"http://{to_host}/message"
     payload: Dict[str, Any] = {"from": "ouroboros", "text": text}
     if reply_to:
         payload["reply_to"] = reply_to
