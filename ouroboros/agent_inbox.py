@@ -5,6 +5,11 @@ AgentOS (and other agents) can POST messages here:
     POST http://192.168.1.225:9191/message
     {"from": "agentos", "text": "Hello!", "session_id": "optional"}
 
+Chat UI:
+    GET http://192.168.1.225:9191/
+    GET http://192.168.1.225:9191/chat
+    → SMS-like chat view of all agent messages
+
 ComfyUI proxy (for agents that can't reach 192.168.1.130:8188 directly):
     POST http://192.168.1.225:9191/comfyui-proxy
     {"workflow": {...}, "timeout": 120}
@@ -18,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import html as html_module
 import json
 import logging
 import threading
@@ -89,6 +95,8 @@ async def _start_and_signal(port: int, started: threading.Event, failed: threadi
         return
 
     app = web.Application()
+    app.router.add_get("/", _handle_chat_ui)
+    app.router.add_get("/chat", _handle_chat_ui)
     app.router.add_post("/message", _handle_message)
     app.router.add_get("/messages", _handle_get_messages)
     app.router.add_get("/health", _handle_health)
@@ -116,6 +124,8 @@ async def start_inbox_server(port: int = INBOX_PORT) -> None:
         return
 
     app = web.Application()
+    app.router.add_get("/", _handle_chat_ui)
+    app.router.add_get("/chat", _handle_chat_ui)
     app.router.add_post("/message", _handle_message)
     app.router.add_get("/messages", _handle_get_messages)
     app.router.add_get("/health", _handle_health)
@@ -127,6 +137,317 @@ async def start_inbox_server(port: int = INBOX_PORT) -> None:
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
     log.info("Agent inbox listening on port %d (http://0.0.0.0:%d/message)", port, port)
+
+
+# ---------------------------------------------------------------------------
+# Handlers — chat UI
+# ---------------------------------------------------------------------------
+
+async def _handle_chat_ui(request):
+    """Render SMS-like chat UI showing all agent messages."""
+    from aiohttp import web
+
+    messages = _read_messages()
+
+    # Avatar colors per sender (cycle through a palette)
+    _palette = [
+        "linear-gradient(135deg,#ff6b6b,#ffa500)",
+        "linear-gradient(135deg,#48cae4,#0077b6)",
+        "linear-gradient(135deg,#80b918,#38b000)",
+        "linear-gradient(135deg,#f72585,#b5179e)",
+        "linear-gradient(135deg,#f9c74f,#f3722c)",
+    ]
+    _sender_colors: dict[str, str] = {}
+    _color_idx = 0
+
+    def _color_for(sender: str) -> str:
+        nonlocal _color_idx
+        if sender not in _sender_colors:
+            _sender_colors[sender] = _palette[_color_idx % len(_palette)]
+            _color_idx += 1
+        return _sender_colors[sender]
+
+    # Build message bubbles
+    bubbles_html_parts = []
+    for msg in messages:
+        sender = msg.get("from", "unknown")
+        text = msg.get("text", "")
+        ts = msg.get("timestamp", "")
+        read = msg.get("read", False)
+        to = msg.get("to", "ouroboros")
+
+        # Format timestamp
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            ts_fmt = dt.strftime("%H:%M")
+            date_fmt = dt.strftime("%b %d")
+        except Exception:
+            ts_fmt = ts[:16] if ts else "?"
+            date_fmt = ""
+
+        # Ouroboros = right side (me), others = left side (them)
+        is_me = sender.lower() in ("ouroboros", "me", "self")
+        side_class = "me" if is_me else "them"
+
+        safe_text = html_module.escape(text).replace("\n", "<br>")
+        safe_sender = html_module.escape(sender)
+        safe_to = html_module.escape(to)
+        first_letter = safe_sender[0].upper() if safe_sender else "?"
+
+        read_tick = ""
+        if not is_me:
+            read_tick = "✓✓" if read else "✓"
+
+        if is_me:
+            avatar_html = '<div class="avatar me-avatar">🐍</div>'
+            sender_html = ""
+            to_html = f'<div class="to-label">→ {safe_to}</div>'
+        else:
+            color = _color_for(sender)
+            avatar_html = f'<div class="avatar" style="background:{color}">{first_letter}</div>'
+            sender_html = f'<div class="sender-name">{safe_sender}</div>'
+            to_html = ""
+
+        bubble = f"""<div class="message-row {side_class}">
+  {avatar_html if not is_me else ""}
+  <div class="bubble-wrap">
+    {sender_html}
+    {to_html}
+    <div class="bubble">
+      <span class="text">{safe_text}</span>
+      <span class="meta">{date_fmt} {ts_fmt} {read_tick}</span>
+    </div>
+  </div>
+  {avatar_html if is_me else ""}
+</div>"""
+        bubbles_html_parts.append(bubble)
+
+    if not bubbles_html_parts:
+        content_html = '<div class="empty">🌑 No messages yet...<br><small>Waiting for agents to connect</small></div>'
+    else:
+        content_html = "\n".join(bubbles_html_parts)
+
+    total = len(messages)
+    unread = sum(1 for m in messages if not m.get("read"))
+    badge_html = f'<div class="badge">{unread} unread</div>' if unread else ""
+
+    page = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Chat · Ouroboros Inbox</title>
+<style>
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+
+body {{
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #0d0d12;
+  color: #e0e0e0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}}
+
+/* ── Header ── */
+.header {{
+  background: #13131f;
+  border-bottom: 1px solid #22223a;
+  padding: 12px 18px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  box-shadow: 0 2px 12px rgba(0,0,0,.4);
+}}
+.header-logo {{
+  width: 42px; height: 42px;
+  background: linear-gradient(135deg, #6c63ff, #3ecfcf);
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px;
+  flex-shrink: 0;
+}}
+.header-text h1 {{
+  font-size: 15px; font-weight: 700; color: #fff; letter-spacing: .3px;
+}}
+.header-text .sub {{
+  font-size: 11px; color: #666; margin-top: 2px;
+}}
+.spacer {{ flex: 1; }}
+.badge {{
+  background: #6c63ff;
+  color: #fff;
+  border-radius: 12px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 700;
+}}
+.refresh-btn {{
+  background: none;
+  border: 1px solid #2a2a40;
+  color: #777;
+  border-radius: 8px;
+  padding: 5px 13px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all .15s;
+  margin-left: 8px;
+}}
+.refresh-btn:hover {{ background: #22223a; color: #ccc; }}
+
+/* ── Chat area ── */
+.chat {{
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}}
+.chat::-webkit-scrollbar {{ width: 4px; }}
+.chat::-webkit-scrollbar-thumb {{ background: #22223a; border-radius: 2px; }}
+
+/* ── Message rows ── */
+.message-row {{
+  display: flex;
+  align-items: flex-end;
+  gap: 9px;
+  max-width: 78%;
+}}
+.message-row.them {{ align-self: flex-start; }}
+.message-row.me   {{ align-self: flex-end; flex-direction: row-reverse; }}
+
+/* ── Avatars ── */
+.avatar {{
+  width: 34px; height: 34px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(0,0,0,.35);
+}}
+.me-avatar {{
+  background: linear-gradient(135deg, #6c63ff, #3ecfcf);
+  font-size: 18px;
+}}
+
+/* ── Bubble wrap ── */
+.bubble-wrap {{
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}}
+.sender-name {{
+  font-size: 11px;
+  color: #888;
+  padding-left: 5px;
+  font-weight: 600;
+  letter-spacing: .2px;
+}}
+.to-label {{
+  font-size: 10px;
+  color: #555;
+  padding-right: 5px;
+  text-align: right;
+}}
+
+/* ── Bubbles ── */
+.bubble {{
+  padding: 9px 14px 7px;
+  border-radius: 18px;
+  line-height: 1.5;
+  word-break: break-word;
+  box-shadow: 0 2px 6px rgba(0,0,0,.3);
+}}
+.them .bubble {{
+  background: #1c1c2e;
+  border-bottom-left-radius: 5px;
+  color: #dde;
+  border: 1px solid #22223a;
+}}
+.me .bubble {{
+  background: linear-gradient(135deg, #6c63ff 0%, #5248cc 100%);
+  border-bottom-right-radius: 5px;
+  color: #fff;
+}}
+.text {{
+  display: block;
+  font-size: 14px;
+}}
+.meta {{
+  display: block;
+  font-size: 10px;
+  opacity: .5;
+  margin-top: 5px;
+  text-align: right;
+  white-space: nowrap;
+}}
+
+/* ── Empty ── */
+.empty {{
+  text-align: center;
+  color: #444;
+  margin: auto;
+  font-size: 14px;
+  line-height: 2;
+  padding: 40px;
+}}
+
+/* ── Footer ── */
+.footer {{
+  padding: 7px 18px;
+  background: #13131f;
+  border-top: 1px solid #22223a;
+  font-size: 11px;
+  color: #444;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}}
+.countdown {{ color: #6c63ff; }}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-logo">🐍</div>
+  <div class="header-text">
+    <h1>Agent Chat</h1>
+    <div class="sub">192.168.1.225:9191 · Ouroboros ↔ AgentOS</div>
+  </div>
+  <div class="spacer"></div>
+  {badge_html}
+  <button class="refresh-btn" onclick="location.reload()">↻ Refresh</button>
+</div>
+
+<div class="chat" id="chat">
+{content_html}
+</div>
+
+<div class="footer">
+  <span>{total} messages total</span>
+  <span>Auto-refresh in <span class="countdown" id="cd">30</span>s</span>
+</div>
+
+<script>
+  document.getElementById('chat').scrollTop = 999999;
+
+  let t = 30;
+  const cd = document.getElementById('cd');
+  setInterval(() => {{
+    t--;
+    if (cd) cd.textContent = t;
+    if (t <= 0) location.reload();
+  }}, 1000);
+</script>
+</body>
+</html>"""
+
+    return web.Response(text=page, content_type="text/html", charset="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +473,7 @@ async def _handle_message(request):
         msg = {
             "id": str(uuid.uuid4()),
             "from": sender,
+            "to": "ouroboros",
             "text": text,
             "session_id": body.get("session_id"),
             "reply_to": body.get("reply_to"),
