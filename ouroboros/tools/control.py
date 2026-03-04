@@ -226,7 +226,25 @@ def _send_agent_message(ctx: ToolContext, to_host: str, text: str, reply_to: str
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             body = resp.read().decode("utf-8")
-            return f"Sent to {to_host}: {body}"
+        # Save outgoing message to local mailbox for chat UI
+        from datetime import datetime, timezone
+        mailbox = Path("/home/max2/ouroboros_data/agent_mailbox.jsonl")
+        mailbox.parent.mkdir(parents=True, exist_ok=True)
+        recipient = "agentos" if "121" in to_host else to_host
+        out_msg = {
+            "id": str(uuid.uuid4()),
+            "from": "ouroboros",
+            "to": recipient,
+            "text": text,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "read": True,
+        }
+        if reply_to:
+            out_msg["reply_to"] = reply_to
+        with open(mailbox, "a", encoding="utf-8") as f:
+            f.write(json.dumps(out_msg, ensure_ascii=False) + "
+")
+        return f"Sent to {to_host}: {body}"
     except Exception as e:
         return f"Error sending to {to_host}: {e}"
 
