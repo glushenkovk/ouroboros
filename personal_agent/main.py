@@ -1,4 +1,3 @@
-
 import asyncio
 import os
 import signal
@@ -84,10 +83,7 @@ async def main():
 
     # Initialize scratchpad if not exists
     if not memory.read_scratchpad():
-        memory.write_scratchpad(f"# Scratchpad
-
-Agent started. Ready to work.
-")
+        memory.write_scratchpad("# Scratchpad\n\nAgent started. Ready to work.\n")
 
     # Build system prompt from identity
     identity = memory.read_identity()
@@ -130,8 +126,7 @@ When you have a final answer, give it as plain text.
     shutdown_event = asyncio.Event()
 
     def handle_signal(*args):
-        print("
-Shutdown signal received")
+        print("\nShutdown signal received")
         shutdown_event.set()
 
     loop = asyncio.get_event_loop()
