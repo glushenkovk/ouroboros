@@ -67,7 +67,7 @@ async def main():
     # Initialize memory
     memory = Memory(data_dir=config.DATA_DIR)
     if not memory.read_identity():
-        memory.update_identity(DEFAULT_IDENTITY)
+        memory.write_identity(DEFAULT_IDENTITY)
 
     # Build system prompt
     identity = memory.read_identity()
@@ -81,6 +81,21 @@ async def main():
 - When you don't know something, say so and offer to find out.
 - Think like a business partner, not an assistant.
 - Respond in the same language the user writes in (Russian or English).
+
+## File Access
+You have FULL file access on this machine. Use your tools freely — no restrictions:
+- read_file(path) — read any file
+- write_file(path, content) — create or overwrite any file
+- list_dir(path) — list directory contents
+- run_shell(cmd) — run shell commands (git, python, pip, etc.)
+
+Key paths:
+- Home directory: /home/max2/
+- Your data/memory: {config.DATA_DIR}
+- Agent code: /home/max2/ouroboros_repo/personal_agent/
+
+You are allowed to read and write ANY file you need to complete a task.
+When asked to edit a file: read it first, make the change, write it back.
 """
 
     # Initialize agent
@@ -95,16 +110,21 @@ async def main():
     bot = TelegramBot(token=token, owner_id=owner_id, agent=agent)
 
     # Initialize consciousness (background loop)
-    consciousness = Consciousness(agent=agent, bot=bot, interval=config.BG_INTERVAL)
+    consciousness = Consciousness(
+        agent=agent,
+        memory=memory,
+        telegram=bot,
+        interval=config.BG_INTERVAL,
+    )
 
     # Graceful shutdown
-    loop = asyncio.get_event_loop()
     stop_event = asyncio.Event()
 
     def _shutdown():
         print("Shutting down...")
         stop_event.set()
 
+    loop = asyncio.get_event_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _shutdown)
 
@@ -114,7 +134,7 @@ async def main():
 
     # Start everything
     await bot.start()
-    consciousness.start(loop)
+    await consciousness.start()
 
     print(f"{config.AGENT_NAME} is running. Press Ctrl+C to stop.")
 
@@ -122,7 +142,7 @@ async def main():
     await stop_event.wait()
 
     # Cleanup
-    consciousness.stop()
+    await consciousness.stop()
     await bot.stop()
     print("Stopped.")
 
