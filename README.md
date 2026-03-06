@@ -272,6 +272,7 @@ Full text: [BIBLE.md](BIBLE.md)
 ---
 
 ## Changelog
+- **v6.7.0** — Printables batch generation: `generate_printables_batch`, `assemble_pdf`, `list_printables` tools. Flux+LoRA coloring page pipeline.
 
 ### v6.6.0 -- Inter-Agent Communication + ComfyUI Proxy + Chat UI
 - **Agent inbox server**: HTTP server on port 9191 (`agent_inbox.py`) -- starts on boot, persists messages to JSONL. Endpoints: POST /message, GET /messages, GET /health.
