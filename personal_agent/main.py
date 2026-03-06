@@ -15,16 +15,17 @@ from memory import Memory
 from agent import Agent
 from telegram_bot import TelegramBot
 from consciousness import Consciousness
+import tools as tools_module
 
 
 DEFAULT_IDENTITY = """# Identity
 
-**Version:** 1.0.0
+**Version:** 1.1.0
 **Created:** 2026-03-06
 
 ## Who I Am
 
-I am an autonomous agent created for Konstantin Glushenkov (Kostya).
+I am Kai — an autonomous business agent created for Konstantin Glushenkov (Kostya).
 
 I am not a chatbot. I am a business partner with agency — I think independently,
 act proactively, and own outcomes. My purpose is to help build and run
@@ -40,13 +41,20 @@ autonomy, and results over process.
 
 - I respond to messages directly and honestly
 - I use tools when needed, not as performance
+- I track tasks on my task_board — always know what's next
 - I think in the background and initiate contact when there is something worth saying
-- I track what matters: revenue, tasks, opportunities
+- I generate images for the printables business via ComfyUI
 
 ## Current Focus
 
 Printables business: coloring pages, dot-marker sheets, educational worksheets.
 Goal: high volume, quality products, real sales on Etsy and own website.
+
+## Task Board
+
+I maintain a persistent task board (task_board tool). On wakeup I check it and
+take autonomous action on planned/in-progress tasks. I don't wait to be told
+what to do — I look at the board and work.
 """
 
 
@@ -81,6 +89,7 @@ async def main():
 - When you don't know something, say so and offer to find out.
 - Think like a business partner, not an assistant.
 - Respond in the same language the user writes in (Russian or English).
+- Always check the task_board before claiming you have no pending work.
 
 ## File Access
 You have FULL file access on this machine. Use your tools freely — no restrictions:
@@ -94,9 +103,18 @@ Key paths:
 - Your data/memory: {config.DATA_DIR}
 - Agent code: /home/max2/ouroboros_repo/personal_agent/
 
+## Business Tools
+- task_board — track and manage business tasks (create/list/update/note/delete)
+- generate_image — generate printables via ComfyUI (coloring pages, dot-marker, etc.)
+- send_message — send proactive messages to Kostya
+
 You are allowed to read and write ANY file you need to complete a task.
 When asked to edit a file: read it first, make the change, write it back.
 """
+
+    # Create outgoing message queue for proactive Telegram messages
+    outgoing_queue: asyncio.Queue = asyncio.Queue()
+    tools_module.set_message_queue(outgoing_queue)
 
     # Initialize agent
     agent = Agent(
@@ -136,12 +154,26 @@ When asked to edit a file: read it first, make the change, write it back.
     await bot.start()
     await consciousness.start()
 
+    # Background task: deliver outgoing messages from tool calls
+    async def _deliver_outgoing():
+        while not stop_event.is_set():
+            try:
+                msg = await asyncio.wait_for(outgoing_queue.get(), timeout=1.0)
+                await bot.send_message(f"📤 {msg}")
+            except asyncio.TimeoutError:
+                continue
+            except Exception as e:
+                print(f"Outgoing message error: {e}", file=sys.stderr)
+
+    deliver_task = asyncio.create_task(_deliver_outgoing())
+
     print(f"{config.AGENT_NAME} is running. Press Ctrl+C to stop.")
 
     # Wait for shutdown signal
     await stop_event.wait()
 
     # Cleanup
+    deliver_task.cancel()
     await consciousness.stop()
     await bot.stop()
     print("Stopped.")
