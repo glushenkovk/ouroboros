@@ -148,8 +148,7 @@ def execute_tool(name: str, args: dict, memory: Memory) -> str:
             snippets = re.findall(r'<a class="result__snippet"[^>]*>([^<]+)<', text)
             if not snippets:
                 return f"No results. Raw: {text[:1000]}"
-            return "
-".join(f"- {s}" for s in snippets[:8])
+            return "\n".join(f"- {s}" for s in snippets[:8])
 
         elif name == "http_get":
             import httpx
