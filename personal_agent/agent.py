@@ -141,3 +141,9 @@ class Agent:
             return response
 
         return "(Max iterations reached)"
+    async def handle_message(self, user_message: str) -> str:
+        """Handle a user message: process and persist to memory."""
+        self.memory.add_chat_message("user", user_message)
+        response = await self.respond(user_message)
+        self.memory.add_chat_message("assistant", response)
+        return response
