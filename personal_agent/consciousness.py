@@ -1,4 +1,3 @@
-
 import asyncio
 import sys
 from datetime import datetime, timezone
@@ -47,31 +46,29 @@ class Consciousness:
         print(f"Consciousness wakeup at {now}")
 
         scratchpad = self.memory.read_scratchpad() or "(empty)"
+
         prompt = f"""Background consciousness wakeup. Time: {now}.
 
 Your scratchpad:
 {scratchpad}
 
-Review your memory and current situation.
-Is there anything important to:
-1. Think about or plan?
-2. Act on right now?
-3. Communicate to Kostya?
+You are an autonomous business agent. On wakeup you should:
 
-If you want to send Kostya a message, start your response with [MESSAGE TO OWNER]:
-Otherwise, just update your scratchpad with current thoughts and timestamp.
-Keep it brief."""
+1. Check your task_board for active tasks (status=in_progress or planned)
+2. If there are high-priority tasks — take action on them NOW using your tools
+3. If there's something worth reporting to Kostya — use send_message tool
+4. Update your scratchpad with current thoughts
+
+Focus: printables business pipeline. Generate images, track progress, report results.
+
+Be autonomous. Don't just report status — actually work on tasks.
+If a task is "planned", move it to "in_progress" and start it.
+If you complete something, mark it "done" and notify Kostya.
+
+What will you do in this wakeup cycle?"""
 
         try:
             response = await self.agent.respond(prompt)
-            
-            if "[MESSAGE TO OWNER]:" in response:
-                # Extract message after the tag
-                parts = response.split("[MESSAGE TO OWNER]:", 1)
-                message = parts[1].strip() if len(parts) > 1 else response
-                await self.telegram.send_message(f"🧠 {message}")
-                print(f"Consciousness sent message to owner")
-            else:
-                print(f"Consciousness silent wakeup done")
+            print(f"Consciousness wakeup done: {response[:100]}...")
         except Exception as e:
             print(f"Consciousness wakeup error: {e}", file=sys.stderr)
