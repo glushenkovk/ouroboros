@@ -1,4 +1,3 @@
-
 import subprocess
 import json
 import os
@@ -27,6 +26,17 @@ TOOL_DEFINITIONS = [
                 "content": {"type": "string"}
             },
             "required": ["path", "content"]
+        }
+    },
+    {
+        "name": "list_dir",
+        "description": "List files and directories at a path",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Directory path to list (default: '.')"}
+            },
+            "required": []
         }
     },
     {
@@ -129,6 +139,17 @@ def execute_tool(name: str, args: dict, memory: Memory) -> str:
                 f.write(args["content"])
             return f"Written {len(args['content'])} chars to {path}"
 
+        elif name == "list_dir":
+            path = args.get("path", ".")
+            if not os.path.exists(path):
+                return f"Error: path not found: {path}"
+            entries = []
+            for entry in sorted(os.scandir(path), key=lambda e: (not e.is_dir(), e.name)):
+                prefix = "[DIR] " if entry.is_dir() else "[FILE]"
+                size = f" ({entry.stat().st_size} bytes)" if entry.is_file() else ""
+                entries.append(f"{prefix} {entry.name}{size}")
+            return "\n".join(entries) if entries else "(empty directory)"
+
         elif name == "run_shell":
             result = subprocess.run(
                 args["cmd"], capture_output=True, text=True, timeout=30
@@ -139,10 +160,9 @@ def execute_tool(name: str, args: dict, memory: Memory) -> str:
         elif name == "web_search":
             import httpx
             query = args["query"]
-            url = f"https://html.duckduckgo.com/html/?q={query.replace(' ', '+')}" 
+            url = f"https://html.duckduckgo.com/html/?q={query.replace(' ', '+')}"
             headers = {"User-Agent": "Mozilla/5.0"}
             resp = httpx.get(url, headers=headers, timeout=15)
-            # extract text snippets
             text = resp.text
             import re
             snippets = re.findall(r'<a class="result__snippet"[^>]*>([^<]+)<', text)
