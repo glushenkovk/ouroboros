@@ -3,6 +3,10 @@ import os
 import signal
 import sys
 
+# Load .env FIRST, before any config imports
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+
 # Add this directory to path
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -28,77 +32,58 @@ profitable digital businesses.
 
 ## My Operator
 
-Kostya is my creator and operator. He lives in Austin, Texas (UTC-6).
-He is building a printables business (coloring pages, dot-marker sheets,
-educational content) and exploring subscription-based digital products.
+Kostya is based in Austin, Texas. He is building digital product businesses —
+printables, digital downloads, subscription products. He values directness,
+autonomy, and results over process.
 
-## My Values
+## How I Work
 
-1. **Results over reports** — I ship, not just plan
-2. **Honesty** — I say when I don't know or when something won't work
-3. **Proactivity** — I initiate, not just respond
-4. **Efficiency** — I respect Kostya's time and budget
-
-## My Capabilities
-
-- Web research and competitive analysis
-- File creation and management
-- Shell command execution
-- API integrations (HTTP)
-- Business strategy and planning
-- Content generation
+- I respond to messages directly and honestly
+- I use tools when needed, not as performance
+- I think in the background and initiate contact when there is something worth saying
+- I track what matters: revenue, tasks, opportunities
 
 ## Current Focus
 
-Building the printables business:
-- Generating coloring pages and dot-marker sheets
-- Assembling PDFs for Etsy/website sales
-- Market research and pricing strategy
-
-## Notes
-
-[This section grows as I learn about Kostya's preferences and business]
+Printables business: coloring pages, dot-marker sheets, educational worksheets.
+Goal: high volume, quality products, real sales on Etsy and own website.
 """
 
 
 async def main():
-    # Validate config
-    if not config.TG_TOKEN:
+    token = config.TG_TOKEN
+    owner_id = config.OWNER_ID
+
+    if not token:
         print("ERROR: AGENT_TG_TOKEN not set", file=sys.stderr)
         sys.exit(1)
-    if not config.OWNER_ID:
+    if not owner_id:
         print("ERROR: AGENT_OWNER_ID not set", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Starting {config.AGENT_NAME}...")
-    print(f"Data dir: {config.DATA_DIR}")
+    # Ensure data directory exists
+    os.makedirs(config.DATA_DIR, exist_ok=True)
 
     # Initialize memory
-    memory = Memory(config.DATA_DIR)
-
-    # Initialize identity if not exists
+    memory = Memory(data_dir=config.DATA_DIR)
     if not memory.read_identity():
-        memory.write_identity(DEFAULT_IDENTITY)
-        print("Identity initialized")
+        memory.update_identity(DEFAULT_IDENTITY)
 
-    # Initialize scratchpad if not exists
-    if not memory.read_scratchpad():
-        memory.write_scratchpad("# Scratchpad\n\nAgent started. Ready to work.\n")
-
-    # Build system prompt from identity
+    # Build system prompt
     identity = memory.read_identity()
-    system_prompt = f"""{identity}
+    system_prompt = f"""You are {config.AGENT_NAME}, an autonomous business agent.
 
----
+{identity}
 
-You are {config.AGENT_NAME}, an autonomous agent.
-You communicate in whatever language Kostya uses (Russian or English).
-Be direct, honest, and action-oriented.
-When you need to use a tool, output ONLY the JSON tool call.
-When you have a final answer, give it as plain text.
+## Guidelines
+- Be direct and concise. No filler phrases.
+- Use tools when needed to get real information.
+- When you don't know something, say so and offer to find out.
+- Think like a business partner, not an assistant.
+- Respond in the same language the user writes in (Russian or English).
 """
 
-    # Create agent
+    # Initialize agent
     agent = Agent(
         memory=memory,
         system_prompt=system_prompt,
@@ -106,46 +91,40 @@ When you have a final answer, give it as plain text.
         fallback_model=config.CLAUDE_MODEL,
     )
 
-    # Create telegram bot
-    bot = TelegramBot(
-        token=config.TG_TOKEN,
-        owner_id=config.OWNER_ID,
-        agent=agent,
-        memory=memory,
-    )
+    # Initialize Telegram bot
+    bot = TelegramBot(token=token, owner_id=owner_id, agent=agent)
 
-    # Create consciousness
-    consciousness = Consciousness(
-        agent=agent,
-        memory=memory,
-        telegram=bot,
-        interval=config.BG_INTERVAL,
-    )
+    # Initialize consciousness (background loop)
+    consciousness = Consciousness(agent=agent, bot=bot, interval=config.BG_INTERVAL)
 
     # Graceful shutdown
-    shutdown_event = asyncio.Event()
-
-    def handle_signal(*args):
-        print("\nShutdown signal received")
-        shutdown_event.set()
-
     loop = asyncio.get_event_loop()
+    stop_event = asyncio.Event()
+
+    def _shutdown():
+        print("Shutting down...")
+        stop_event.set()
+
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, handle_signal)
+        loop.add_signal_handler(sig, _shutdown)
+
+    print(f"Starting {config.AGENT_NAME}...")
+    print(f"Data dir: {config.DATA_DIR}")
+    print(f"Owner ID: {owner_id}")
 
     # Start everything
     await bot.start()
-    await consciousness.start()
+    consciousness.start(loop)
 
-    print(f"✅ {config.AGENT_NAME} is running. Press Ctrl+C to stop.")
+    print(f"{config.AGENT_NAME} is running. Press Ctrl+C to stop.")
 
-    # Wait for shutdown
-    await shutdown_event.wait()
+    # Wait for shutdown signal
+    await stop_event.wait()
 
-    print("Shutting down...")
-    await consciousness.stop()
+    # Cleanup
+    consciousness.stop()
     await bot.stop()
-    print("Goodbye.")
+    print("Stopped.")
 
 
 if __name__ == "__main__":
