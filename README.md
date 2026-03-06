@@ -10,7 +10,7 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.7.0 | [Landing Page](https://glushenkovk.github.io/ouroboros/)
+**Version:** 6.8.0 | [Landing Page](https://glushenkovk.github.io/ouroboros/)
 
 ---
 
@@ -270,6 +270,8 @@ Full text: [BIBLE.md](BIBLE.md)
 ---
 
 ## Changelog
+- **v6.8.0** — Kai autonomous business agent (`personal_agent/`): task board, consciousness loop, ComfyUI integration, 10 tools. `loop.py` P5 refactor: pricing moved to `llm.py` (993→905 lines). ReportLab+Pillow in requirements for printables PDF assembly.
+
 - **v6.7.0** — Printables batch generation: `generate_printables_batch`, `assemble_pdf`, `list_printables` tools. Flux+LoRA coloring page pipeline.
 
 ### v6.6.0 -- Inter-Agent Communication + ComfyUI Proxy + Chat UI
