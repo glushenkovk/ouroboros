@@ -270,6 +270,8 @@ Full text: [BIBLE.md](BIBLE.md)
 ---
 
 ## Changelog
+- **v6.9.0** — Etsy API v3 integration: `etsy_oauth_setup`, `etsy_oauth_exchange`, `etsy_get_shop`, `etsy_list_listings`, `etsy_create_listing`, `etsy_delete_listing`. Full OAuth 2.0 + PKCE flow. Digital download listings for printables (PDF upload + publish). Completes the business pipeline: generate → assemble PDF → list on Etsy.
+
 - **v6.8.2** — Consciousness P7 guardian: autonomous version sync monitoring in CONSCIOUSNESS.md. Background consciousness now periodically checks VERSION/pyproject.toml/git tag alignment and self-heals desyncs (Bible P7 self-maintenance).
 
 - **v6.8.1** — Autonomous consciousness: business tools in BG whitelist (generate_printables_batch, assemble_pdf, comfyui_status). Consciousness can now build printables inventory without human prompting. Scratchpad refreshed.
