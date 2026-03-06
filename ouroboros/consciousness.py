@@ -436,6 +436,9 @@ class BackgroundConsciousness:
         "chat_history",
         # GitHub Issues
         "list_github_issues", "get_github_issue", "comment_on_issue",
+        # Business operations
+        "generate_printables_batch", "assemble_pdf", "list_printables",
+        "comfyui_status", "run_shell",
     })
 
     def _build_registry(self) -> "ToolRegistry":
