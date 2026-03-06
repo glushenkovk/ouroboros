@@ -270,6 +270,8 @@ Full text: [BIBLE.md](BIBLE.md)
 ---
 
 ## Changelog
+- **v6.8.2** — Consciousness P7 guardian: autonomous version sync monitoring in CONSCIOUSNESS.md. Background consciousness now periodically checks VERSION/pyproject.toml/git tag alignment and self-heals desyncs (Bible P7 self-maintenance).
+
 - **v6.8.1** — Autonomous consciousness: business tools in BG whitelist (generate_printables_batch, assemble_pdf, comfyui_status). Consciousness can now build printables inventory without human prompting. Scratchpad refreshed.
 
 - **v6.8.0** — Kai autonomous business agent (`personal_agent/`): task board, consciousness loop, ComfyUI integration, 10 tools. `loop.py` P5 refactor: pricing moved to `llm.py` (993→905 lines). ReportLab+Pillow in requirements for printables PDF assembly.
