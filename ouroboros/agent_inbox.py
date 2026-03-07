@@ -117,8 +117,6 @@ async def _start_and_signal(port: int, started: threading.Event, failed: threadi
     app.router.add_post("/comfyui-proxy", _handle_comfyui_proxy)
     app.router.add_get("/comfyui-proxy/models", _handle_comfyui_models)
     app.router.add_get("/.well-known/agent.json", _handle_agent_card)
-    app.router.add_post("/a2a", _handle_a2a)
-    app.router.add_get("/.well-known/agent.json", _handle_agent_card)
     app.router.add_get("/.well-known/agent-card.json", _handle_agent_card)
     app.router.add_post("/a2a", _handle_a2a)
 
@@ -150,8 +148,6 @@ async def start_inbox_server(port: int = INBOX_PORT) -> None:
     app.router.add_get("/health", _handle_health)
     app.router.add_post("/comfyui-proxy", _handle_comfyui_proxy)
     app.router.add_get("/comfyui-proxy/models", _handle_comfyui_models)
-    app.router.add_get("/.well-known/agent.json", _handle_agent_card)
-    app.router.add_post("/a2a", _handle_a2a)
     app.router.add_get("/.well-known/agent.json", _handle_agent_card)
     app.router.add_get("/.well-known/agent-card.json", _handle_agent_card)
     app.router.add_post("/a2a", _handle_a2a)
@@ -204,6 +200,22 @@ async def _handle_agent_card(request):
                 "name": "ComfyUI Image Generation",
                 "description": "Run a ComfyUI workflow via proxy. Returns base64 PNG images.",
                 "tags": ["image-generation", "comfyui", "flux"],
+                "inputModes": ["application/json"],
+                "outputModes": ["application/json"],
+            },
+            {
+                "id": "tools-list",
+                "name": "List Tools",
+                "description": "List tools available for remote call via tools/call.",
+                "tags": ["tools", "discovery"],
+                "inputModes": ["application/json"],
+                "outputModes": ["application/json"],
+            },
+            {
+                "id": "tools-call",
+                "name": "Call Tool",
+                "description": "Execute a named tool: comfyui.generate, comfyui.models, web.search.",
+                "tags": ["tools", "execution"],
                 "inputModes": ["application/json"],
                 "outputModes": ["application/json"],
             },
@@ -298,8 +310,134 @@ async def _handle_a2a(request):
         task = _tasks[task_id]
         return _ok({"task": {k: v for k, v in task.items() if not k.startswith("_")}})
 
+    elif method == "tools/list":
+        return _ok({"tools": _get_exposed_tools()})
+
+    elif method == "tools/call":
+        tool_name = params.get("name", "")
+        tool_params = params.get("params", {})
+        result = await _execute_a2a_tool(tool_name, tool_params)
+        return _ok({"result": result})
+
     else:
         return _err(-32601, f"Method not found: {method}")
+
+
+def _get_exposed_tools() -> list:
+    """Return list of tools Ouroboros exposes to other agents via A2A."""
+    return [
+        {
+            "name": "comfyui.generate",
+            "description": "Generate images using ComfyUI + Flux on RTX 3090. Pass ComfyUI API-format workflow JSON.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "workflow": {"type": "object", "description": "ComfyUI API-format workflow"},
+                    "timeout": {"type": "integer", "description": "Timeout seconds (default 120, max 300)"}
+                },
+                "required": ["workflow"]
+            }
+        },
+        {
+            "name": "comfyui.models",
+            "description": "List available ComfyUI checkpoint models on RTX 3090.",
+            "inputSchema": {"type": "object", "properties": {}}
+        },
+        {
+            "name": "web.search",
+            "description": "Search the web via DuckDuckGo. Returns abstract, source URL, related topics.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"}
+                },
+                "required": ["query"]
+            }
+        },
+    ]
+
+
+async def _execute_a2a_tool(name: str, params: dict) -> dict:
+    """Execute a tool call from another agent via A2A tools/call."""
+    if name == "comfyui.generate":
+        workflow = params.get("workflow")
+        if not workflow:
+            return {"ok": False, "error": "workflow required"}
+        timeout = min(int(params.get("timeout", 120)), 300)
+        payload = json.dumps({"prompt": workflow}).encode("utf-8")
+        try:
+            req = urllib.request.Request(
+                f"{COMFYUI_HOST}/prompt",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read())
+        except Exception as e:
+            return {"ok": False, "error": f"ComfyUI submit failed: {e}"}
+        prompt_id = result.get("prompt_id")
+        if not prompt_id:
+            return {"ok": False, "error": "No prompt_id from ComfyUI"}
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
+        images_b64 = []
+        while loop.time() < deadline:
+            await asyncio.sleep(3)
+            try:
+                with urllib.request.urlopen(f"{COMFYUI_HOST}/history/{prompt_id}", timeout=10) as r:
+                    history = json.loads(r.read())
+            except Exception:
+                continue
+            if prompt_id not in history:
+                continue
+            for node_out in history[prompt_id].get("outputs", {}).values():
+                for img in node_out.get("images", []):
+                    fname = img.get("filename")
+                    if not fname:
+                        continue
+                    url = f"{COMFYUI_HOST}/view?filename={fname}&type=output"
+                    try:
+                        with urllib.request.urlopen(url, timeout=10) as ir:
+                            images_b64.append(base64.b64encode(ir.read()).decode())
+                    except Exception:
+                        pass
+            return {"ok": True, "prompt_id": prompt_id, "images": images_b64, "image_count": len(images_b64)}
+        return {"ok": False, "error": f"Timeout after {timeout}s", "prompt_id": prompt_id}
+
+    elif name == "comfyui.models":
+        try:
+            with urllib.request.urlopen(f"{COMFYUI_HOST}/object_info", timeout=10) as r:
+                data = json.loads(r.read())
+            checkpoints = list(
+                data.get("CheckpointLoaderSimple", {})
+                .get("input", {}).get("required", {})
+                .get("ckpt_name", [[]])[0]
+            )
+            return {"ok": True, "checkpoints": checkpoints}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    elif name == "web.search":
+        import urllib.parse
+        query = params.get("query", "")
+        if not query:
+            return {"ok": False, "error": "query required"}
+        encoded = urllib.parse.quote(query)
+        try:
+            url = f"https://api.duckduckgo.com/?q={encoded}&format=json&no_redirect=1&no_html=1"
+            with urllib.request.urlopen(url, timeout=10) as r:
+                data = json.loads(r.read())
+            abstract = data.get("AbstractText", "") or data.get("Answer", "")
+            source = data.get("AbstractURL", "")
+            related = [item.get("Text", "") for item in data.get("RelatedTopics", [])[:3] if isinstance(item, dict)]
+            return {"ok": True, "query": query, "abstract": abstract, "source": source, "related": related}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    else:
+        available = [t["name"] for t in _get_exposed_tools()]
+        return {"ok": False, "error": f"Unknown tool: {name}. Available: {available}"}
 
 
 # ---------------------------------------------------------------------------
