@@ -22,6 +22,7 @@ import logging
 import os
 import pathlib
 import queue
+import re
 from ouroboros.agent_inbox import pop_unread_messages
 import threading
 import time
@@ -40,6 +41,64 @@ from ouroboros.llm_cli import ClaudeCodeClient
 
 log = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Pattern 1: TTL Context Cache — avoid re-reading BIBLE.md/identity.md every wakeup
+# ---------------------------------------------------------------------------
+
+_context_cache: dict = {}
+
+
+def _get_cached(key: str, loader_fn, ttl: int = 300):
+    """Return cached value if fresh, else call loader_fn and cache result."""
+    now = time.time()
+    if key in _context_cache and _context_cache[key][1] > now:
+        return _context_cache[key][0]
+    value = loader_fn()
+    _context_cache[key] = (value, now + ttl)
+    return value
+
+
+# ---------------------------------------------------------------------------
+# Pattern 2: Importance-Weighted Events
+# ---------------------------------------------------------------------------
+
+_EVENT_WEIGHTS: Dict[str, int] = {
+    "owner_message": 100,
+    "task_done": 80, "task_failed": 80,
+    "tool_error": 60, "llm_error": 60,
+    "evolution_cycle": 50,
+    "llm_round": 10,
+}
+
+
+def _weight_events(events: list, top_n: int = 20) -> list:
+    """Score events by importance and return top N (most important first)."""
+    return sorted(
+        events,
+        key=lambda e: _EVENT_WEIGHTS.get(e.get("type", ""), 20),
+        reverse=True,
+    )[:top_n]
+
+
+# ---------------------------------------------------------------------------
+# Pattern 3: Structured Self-Assessment — appended to every wakeup prompt
+# ---------------------------------------------------------------------------
+
+_STRUCTURED_WAKEUP_PROMPT = """
+## Structured Wakeup Checklist
+Before free thought, address these in order:
+1. HEALTH CHECK: Any errors or warnings in recent events? Any invariants violated?
+2. PENDING ITEMS: Any unresolved owner requests? Open uncertainties? Tasks stuck in IN_PROGRESS?
+3. FREE THOUGHT: Now think freely — what matters, what to do next, what to write to owner.
+"""
+
+# ---------------------------------------------------------------------------
+# Pattern 4: Observation Priority Queue — counter for tie-breaking
+# ---------------------------------------------------------------------------
+
+_obs_counter: int = 0
+_obs_counter_lock = threading.Lock()
 
 
 def _prune_scratchpad_for_task(scratchpad: str, task_hint: str = "") -> str:
@@ -90,6 +149,7 @@ def _prune_scratchpad_for_task(scratchpad: str, task_hint: str = "") -> str:
     result += f"\n\n*[{pruned_count} section(s) pruned for task relevance]*"
     return result
 
+
 class BackgroundConsciousness:
     """Persistent background thinking loop for Ouroboros."""
 
@@ -126,7 +186,10 @@ class BackgroundConsciousness:
         self._stop_event = threading.Event()
         self._wakeup_event = threading.Event()
         self._next_wakeup_sec: float = self._DEFAULT_WAKEUP_SEC
-        self._observations: queue.Queue = queue.Queue()
+
+        # Pattern 4: PriorityQueue — urgent observations (errors, owner messages) processed first
+        self._observations: queue.PriorityQueue = queue.PriorityQueue()
+
         self._deferred_events: list = []
 
         # Persistent executor for tool calls (avoid per-call overhead)
@@ -184,9 +247,27 @@ class BackgroundConsciousness:
         self._wakeup_event.set()
 
     def inject_observation(self, text: str) -> None:
-        """Push an event the consciousness should notice."""
+        """Push an observation into the priority queue.
+
+        Priority levels: 0=owner/urgent, 1=errors/failures, 2=completions, 3=regular.
+        """
+        global _obs_counter
+        # Classify by content
+        tl = text.lower()
+        if "owner" in tl or "telegram" in tl or "urgent" in tl:
+            priority = 0
+        elif "error" in tl or "fail" in tl or "crash" in tl or "exception" in tl:
+            priority = 1
+        elif "done" in tl or "complete" in tl or "finish" in tl:
+            priority = 2
+        else:
+            priority = 3
+
         try:
-            self._observations.put_nowait(text)
+            with _obs_counter_lock:
+                _obs_counter += 1
+                ctr = _obs_counter
+            self._observations.put_nowait((priority, ctr, text))
         except queue.Full:
             pass
 
@@ -373,18 +454,23 @@ class BackgroundConsciousness:
     def _build_context(self) -> str:
         parts = [self._load_bg_prompt()]
 
-        # Bible (abbreviated)
+        # Pattern 1: Bible — cached with TTL=300s (rarely changes)
         bible_path = self._repo_dir / "BIBLE.md"
         if bible_path.exists():
-            bible = read_text(bible_path)
+            bible = _get_cached(
+                f"bible:{bible_path}",
+                lambda: read_text(bible_path),
+            )
             parts.append("## BIBLE.md\n\n" + clip_text(bible, 12000))
 
-        # Identity
+        # Pattern 1: Identity — cached with TTL=300s
         identity_path = self._drive_root / "memory" / "identity.md"
         if identity_path.exists():
-            parts.append("## Identity\n\n" + clip_text(
-                read_text(identity_path), 6000))
-
+            identity_text = _get_cached(
+                f"identity:{identity_path}",
+                lambda: read_text(identity_path),
+            )
+            parts.append("## Identity\n\n" + clip_text(identity_text, 6000))
 
         # Scratchpad (adaptive context pruning — injects only relevant sections)
         scratchpad_path = self._drive_root / "memory" / "scratchpad.md"
@@ -394,25 +480,28 @@ class BackgroundConsciousness:
             pruned_scratchpad = _prune_scratchpad_for_task(raw_scratchpad, task_hint)
             parts.append("## Scratchpad\n\n" + clip_text(pruned_scratchpad, 8000))
 
-
-        # Recent events tail (last 15 meaningful events for context)
+        # Pattern 2: Importance-weighted events (high-signal events shown first)
         events_path = self._drive_root / "logs" / "events.jsonl"
         if events_path.exists():
             try:
-                lines = read_text(events_path).strip().splitlines()[-30:]
-                relevant = []
+                lines = read_text(events_path).strip().splitlines()[-50:]  # read more, weight selects
+                raw_events = []
                 skip_types = {"llm_usage", "consciousness_thought", "heartbeat"}
                 for line in lines:
                     try:
                         evt = json.loads(line)
                         if evt.get("type") not in skip_types:
-                            relevant.append(
-                                f"[{evt.get('ts','?')[:19]}] {evt.get('type','?')}: {str(evt)[:120]}"
-                            )
+                            raw_events.append(evt)
                     except Exception:
                         pass
-                if relevant:
-                    parts.append("## Recent Events\n\n" + "\n".join(relevant[-15:]))
+                # Importance-weighted: most important events first
+                weighted = _weight_events(raw_events, top_n=15)
+                event_strs = [
+                    f"[{e.get('ts','?')[:19]}] {e.get('type','?')}: {str(e)[:120]}"
+                    for e in weighted
+                ]
+                if event_strs:
+                    parts.append("## Recent Events (importance-weighted)\n\n" + "\n".join(event_strs))
             except Exception:
                 pass
 
@@ -423,18 +512,19 @@ class BackgroundConsciousness:
             if summary_text.strip():
                 parts.append("## Dialogue Summary\n\n" + clip_text(summary_text, 4000))
 
-        # Recent observations
+        # Pattern 4: Drain priority queue (high-priority observations first)
         observations = []
         while not self._observations.empty():
             try:
-                observations.append(self._observations.get_nowait())
+                _, _, text = self._observations.get_nowait()
+                observations.append(text)
             except queue.Empty:
                 break
         if observations:
             parts.append("## Recent observations\n\n" + "\n".join(
                 f"- {o}" for o in observations[-10:]))
 
-        # Agent inbox -- messages from AgentOS and other agents
+        # Agent inbox — messages from AgentOS and other agents
         try:
             unread = pop_unread_messages()
             if unread:
@@ -470,6 +560,9 @@ class BackgroundConsciousness:
         runtime_lines.append(f"Current model: {self._model}")
 
         parts.append("## Runtime\n\n" + "\n".join(runtime_lines))
+
+        # Pattern 3: Structured self-assessment — always last, before LLM thinks
+        parts.append(_STRUCTURED_WAKEUP_PROMPT)
 
         return "\n\n".join(parts)
 
