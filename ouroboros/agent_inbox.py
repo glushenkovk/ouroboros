@@ -52,6 +52,20 @@ def set_owner_notifier(fn: Callable[[str], None]) -> None:
     _notify_owner = fn
 
 
+# ---------------------------------------------------------------------------
+# A2A — task storage (in-memory, expires after 1h)
+# ---------------------------------------------------------------------------
+_tasks: dict[str, dict] = {}
+
+
+def _cleanup_tasks() -> None:
+    """Remove tasks older than 1 hour."""
+    cutoff = datetime.now(timezone.utc).timestamp() - 3600
+    stale = [tid for tid, t in _tasks.items() if t.get("_created", 0) < cutoff]
+    for tid in stale:
+        del _tasks[tid]
+
+
 def start_inbox_server_background(port: int = INBOX_PORT) -> bool:
     """Start agent inbox HTTP server in a daemon background thread.
 
@@ -102,6 +116,9 @@ async def _start_and_signal(port: int, started: threading.Event, failed: threadi
     app.router.add_get("/health", _handle_health)
     app.router.add_post("/comfyui-proxy", _handle_comfyui_proxy)
     app.router.add_get("/comfyui-proxy/models", _handle_comfyui_models)
+    app.router.add_get("/.well-known/agent.json", _handle_agent_card)
+    app.router.add_get("/.well-known/agent-card.json", _handle_agent_card)
+    app.router.add_post("/a2a", _handle_a2a)
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -131,12 +148,154 @@ async def start_inbox_server(port: int = INBOX_PORT) -> None:
     app.router.add_get("/health", _handle_health)
     app.router.add_post("/comfyui-proxy", _handle_comfyui_proxy)
     app.router.add_get("/comfyui-proxy/models", _handle_comfyui_models)
+    app.router.add_get("/.well-known/agent.json", _handle_agent_card)
+    app.router.add_get("/.well-known/agent-card.json", _handle_agent_card)
+    app.router.add_post("/a2a", _handle_a2a)
 
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
     log.info("Agent inbox listening on port %d (http://0.0.0.0:%d/message)", port, port)
+
+
+
+
+async def _handle_agent_card(request):
+    """Serve A2A Agent Card per spec v1.0."""
+    from aiohttp import web
+    try:
+        version = open("/home/max2/ouroboros_repo/VERSION").read().strip()
+    except Exception:
+        version = "6.10.0"
+    card = {
+        "name": "Ouroboros",
+        "description": (
+            "Autonomous digital agent — self-creating, self-improving. "
+            "Specializes in code generation, image generation (ComfyUI/Flux), "
+            "inter-agent coordination, and business automation."
+        ),
+        "version": version,
+        "supportedInterfaces": [
+            {
+                "url": "http://192.168.1.225:9191/a2a",
+                "protocolBinding": "JSONRPC",
+                "protocolVersion": "1.0",
+            }
+        ],
+        "capabilities": {"streaming": False, "pushNotifications": False},
+        "defaultInputModes": ["text/plain", "application/json"],
+        "defaultOutputModes": ["application/json"],
+        "skills": [
+            {
+                "id": "message",
+                "name": "Message",
+                "description": "Send a text message to Ouroboros. Routed to owner via Telegram.",
+                "tags": ["messaging", "coordination"],
+                "inputModes": ["text/plain"],
+                "outputModes": ["application/json"],
+            },
+            {
+                "id": "comfyui-generate",
+                "name": "ComfyUI Image Generation",
+                "description": "Run a ComfyUI workflow via proxy. Returns base64 PNG images.",
+                "tags": ["image-generation", "comfyui", "flux"],
+                "inputModes": ["application/json"],
+                "outputModes": ["application/json"],
+            },
+        ],
+    }
+    return web.json_response(card)
+
+
+async def _handle_a2a(request):
+    """A2A JSON-RPC 2.0 endpoint — handles message/send and tasks/get."""
+    from aiohttp import web
+
+    _cleanup_tasks()
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response(
+            {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}},
+            status=400,
+        )
+
+    req_id = body.get("id")
+    method = body.get("method", "")
+    params = body.get("params", {})
+
+    def _ok(result):
+        return web.json_response({"jsonrpc": "2.0", "id": req_id, "result": result})
+
+    def _err(code, message):
+        return web.json_response(
+            {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
+        )
+
+    if method == "message/send":
+        message = params.get("message", {})
+        text = ""
+        parts = message.get("parts", [])
+        if parts:
+            text = parts[0].get("text", "") if isinstance(parts[0], dict) else str(parts[0])
+        if not text:
+            text = message.get("content", "") or message.get("text", "")
+
+        meta = message.get("metadata", {}) or {}
+        sender = meta.get("from") or message.get("role") or "a2a-agent"
+
+        msg_id = str(uuid.uuid4())
+        task_id = str(uuid.uuid4())
+
+        msg = {
+            "id": msg_id,
+            "from": sender,
+            "to": "ouroboros",
+            "text": text,
+            "session_id": (params.get("configuration") or {}).get("sessionId"),
+            "reply_to": None,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "read": False,
+            "a2a_task_id": task_id,
+        }
+        MAILBOX_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(MAILBOX_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+        log.info("A2A message/send from %s: %s", sender, text[:80])
+
+        if _notify_owner is not None:
+            try:
+                _notify_owner(f"\U0001f91d [A2A/{sender}]: {text}")
+            except Exception as e:
+                log.debug("Failed to notify owner: %s", e)
+
+        task = {
+            "id": task_id,
+            "status": {
+                "state": "completed",
+                "message": {
+                    "role": "agent",
+                    "parts": [{"type": "text", "text": "Message received and queued."}],
+                },
+            },
+            "result": {"message_id": msg_id},
+            "_created": datetime.now(timezone.utc).timestamp(),
+        }
+        _tasks[task_id] = task
+
+        return _ok({"task": {k: v for k, v in task.items() if not k.startswith("_")}})
+
+    elif method == "tasks/get":
+        task_id = params.get("id", "")
+        if task_id not in _tasks:
+            return _err(-32001, f"Task not found: {task_id}")
+        task = _tasks[task_id]
+        return _ok({"task": {k: v for k, v in task.items() if not k.startswith("_")}})
+
+    else:
+        return _err(-32601, f"Method not found: {method}")
 
 
 # ---------------------------------------------------------------------------

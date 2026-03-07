@@ -223,6 +223,6 @@ def get_tools() -> List[ToolEntry]:
                     "required": ["prompt"],
                 },
             },
-            fn=_ollama_code_task,
+            handler=_ollama_code_task,
         )
     ]
