@@ -448,12 +448,7 @@ class OllamaClient:
             "max_tokens": max_tokens,
         }
         if tools:
-            # Strip cache_control from tools — Ollama doesn't support it
-            clean_tools = []
-            for t in tools:
-                t_copy = {k: v for k, v in t.items() if k != "cache_control"}
-                clean_tools.append(t_copy)
-            kwargs["tools"] = clean_tools
+            kwargs["tools"] = _strip_cache_control(tools)
             try:
                 kwargs["tool_choice"] = tool_choice
             except Exception:
@@ -515,12 +510,7 @@ class OpenAIClient:
             "max_tokens": max_tokens,
         }
         if tools:
-            # Strip cache_control from tools — OpenAI native doesn't use it
-            clean_tools = []
-            for t in tools:
-                t_copy = {k: v for k, v in t.items() if k != "cache_control"}
-                clean_tools.append(t_copy)
-            kwargs["tools"] = clean_tools
+            kwargs["tools"] = _strip_cache_control(tools)
             kwargs["tool_choice"] = tool_choice
 
         resp = client.chat.completions.create(**kwargs)
