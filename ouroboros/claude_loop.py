@@ -153,7 +153,7 @@ def _ollama_chat_fallback(
     # --- Try Ollama first ---
     try:
         from ouroboros.llm import OllamaClient
-        ollama = OllamaClient(host=ollama_host, model=ollama_model)
+        ollama = OllamaClient(host=ollama_host)
         text_msg, ollama_usage = ollama.chat(
             messages=messages, model=ollama_model, max_tokens=4096
         )
