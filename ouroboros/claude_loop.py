@@ -17,6 +17,8 @@ import queue
 import time
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple
 
+import requests as _requests
+
 from claude_agent_sdk import (
     ClaudeAgentOptions,
     AssistantMessage,
@@ -100,6 +102,130 @@ def _is_benign_cleanup_error(exc: BaseException) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Claude usage-limit detection + automatic fallback
+# ---------------------------------------------------------------------------
+
+_LIMIT_PHRASES = (
+    "usage limit",
+    "rate limit",
+    "rate_limit",
+    "overloaded",
+    "too many requests",
+    "daily limit",
+    "monthly limit",
+    "exceeded your",
+    "claude.ai/upgrade",
+)
+
+
+def _is_limit_error(text: str) -> bool:
+    """Return True if text indicates a Claude usage/rate limit hit."""
+    low = text.lower()
+    return any(p in low for p in _LIMIT_PHRASES)
+
+
+def _ollama_chat_fallback(
+    messages: List[Dict[str, Any]],
+    reason: str,
+) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+    """Fallback when Claude hits limits: Ollama qwen2.5:32b → cheap OpenRouter.
+
+    Returns (text, usage, llm_trace) in the same format as run_claude_sdk_loop.
+    ENV overrides:
+      OLLAMA_CHAT_HOST  — Ollama host (default: OLLAMA_HOST or 192.168.1.130:11434)
+      OLLAMA_CHAT_MODEL — local chat model (default: qwen2.5:32b)
+      CHEAP_FALLBACK_MODEL — OpenRouter fallback (default: deepseek/deepseek-r1-distill-qwen-7b)
+    """
+    ollama_host = os.environ.get(
+        "OLLAMA_CHAT_HOST",
+        os.environ.get("OLLAMA_HOST", "http://192.168.1.130:11434"),
+    )
+    ollama_model = os.environ.get("OLLAMA_CHAT_MODEL", "qwen2.5:32b")
+    cheap_model = os.environ.get(
+        "CHEAP_FALLBACK_MODEL", "deepseek/deepseek-r1-distill-qwen-7b"
+    )
+
+    log.warning(
+        "[FALLBACK] Claude limit hit (%s) → Ollama %s @ %s",
+        reason[:80], ollama_model, ollama_host,
+    )
+
+    # --- Try Ollama first ---
+    try:
+        from ouroboros.llm import OllamaClient
+        ollama = OllamaClient(host=ollama_host, model=ollama_model)
+        text_msg, ollama_usage = ollama.chat(
+            messages=messages, model=ollama_model, max_tokens=4096
+        )
+        text = text_msg.get("content", "") if isinstance(text_msg, dict) else str(text_msg)
+        if text:
+            log.info("[FALLBACK] Ollama responded: %d chars", len(text))
+            ollama_usage["fallback"] = f"ollama:{ollama_model}"
+            trace = {
+                "provider": "ollama_fallback",
+                "model": ollama_model,
+                "reason": reason,
+                "assistant_notes": [text[:320]],
+                "tool_calls": [],
+            }
+            return text, ollama_usage, trace
+    except Exception as ollama_err:
+        log.warning("[FALLBACK] Ollama failed: %s → trying cheap OpenRouter", ollama_err)
+
+    # --- Ollama unavailable → cheap OpenRouter ---
+    try:
+        openrouter_key = os.environ.get("OPENROUTER_API_KEY", "")
+        if not openrouter_key:
+            raise RuntimeError("No OPENROUTER_API_KEY")
+
+        simple_messages = []
+        for m in messages:
+            role = m.get("role", "user")
+            if role not in ("system", "user", "assistant"):
+                continue
+            content = m.get("content", "")
+            if isinstance(content, list):
+                content = " ".join(
+                    b.get("text", "") for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                )
+            simple_messages.append({"role": role, "content": content})
+
+        resp = _requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {openrouter_key}",
+                "Content-Type": "application/json",
+            },
+            json={"model": cheap_model, "messages": simple_messages, "max_tokens": 4096},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        text = data["choices"][0]["message"]["content"] or ""
+        # ~$0.14/M tokens estimate for cheap distill models
+        cost = data.get("usage", {}).get("total_tokens", 0) * 0.00000014
+        or_usage = {"cost": cost, "fallback": f"openrouter:{cheap_model}", "provider": "openrouter"}
+        trace = {
+            "provider": "openrouter_cheap_fallback",
+            "model": cheap_model,
+            "reason": reason,
+            "assistant_notes": [text[:320]],
+            "tool_calls": [],
+        }
+        log.info("[FALLBACK] OpenRouter cheap responded: %d chars", len(text))
+        return text, or_usage, trace
+    except Exception as or_err:
+        log.error("[FALLBACK] All fallbacks failed: %s", or_err)
+
+    return (
+        f"⚠️ Claude usage limit reached and all fallbacks failed. Reason: {reason[:120]}",
+        {"cost": 0.0, "fallback": "all_failed", "provider": "none"},
+        {"provider": "none", "error": reason, "assistant_notes": [], "tool_calls": []},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Async core
 # ---------------------------------------------------------------------------
 
@@ -133,6 +259,7 @@ async def _run_async(
     options: ClaudeAgentOptions,
     emit_progress: Callable[[str], None],
     timeout_seconds: int = 600,
+    messages: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Run claude-agent-sdk query and collect results."""
     final_text = ""
@@ -225,6 +352,10 @@ async def _run_async(
             log.error("Claude SDK query failed: %s", e, exc_info=True)
             llm_trace["error"] = str(e)
             if not final_text:
+                error_text = str(e)
+                if _is_limit_error(error_text) and messages is not None:
+                    log.warning("[LIMIT] Limit detected in SDK exception → fallback")
+                    return _ollama_chat_fallback(messages, error_text[:120])
                 final_text = f"Claude SDK error: {e}"
 
     if final_text:
@@ -236,6 +367,11 @@ async def _run_async(
         len(final_text), got_result, usage.get("rounds", 0),
         len(llm_trace.get("tool_calls", [])), total_elapsed,
     )
+
+    # Detect limit message in the response text itself
+    if final_text and _is_limit_error(final_text) and not usage.get("fallback") and messages is not None:
+        log.warning("[LIMIT] Limit detected in response text → fallback")
+        return _ollama_chat_fallback(messages, final_text[:120])
 
     return final_text, usage, llm_trace
 
@@ -309,7 +445,7 @@ def run_claude_loop(
     loop = asyncio.new_event_loop()
     try:
         # Hard timeout via wait_for — fires even if query() blocks without yielding
-        coro = _run_async(user_prompt, options, emit_progress, timeout_seconds)
+        coro = _run_async(user_prompt, options, emit_progress, timeout_seconds, messages)
         text, usage, llm_trace = loop.run_until_complete(
             asyncio.wait_for(coro, timeout=timeout_seconds)
         )
@@ -320,9 +456,14 @@ def run_claude_loop(
         llm_trace = {"error": "hard_timeout", "provider": "claude_sdk"}
     except Exception as e:
         log.error("Claude SDK loop crashed: %s", e, exc_info=True)
-        text = f"Claude SDK loop error: {e}"
-        usage = {"cost": 0, "provider": "claude_sdk", "rounds": 0}
-        llm_trace = {"error": str(e), "provider": "claude_sdk"}
+        error_text = str(e)
+        if _is_limit_error(error_text):
+            log.warning("[LIMIT] Limit detected in outer loop exception → fallback")
+            text, usage, llm_trace = _ollama_chat_fallback(messages, error_text[:120])
+        else:
+            text = f"Claude SDK loop error: {e}"
+            usage = {"cost": 0, "provider": "claude_sdk", "rounds": 0}
+            llm_trace = {"error": str(e), "provider": "claude_sdk"}
     finally:
         loop.close()
 
