@@ -209,14 +209,22 @@ def _wait_for_task(ctx: ToolContext, task_id: str) -> str:
 
 def _send_agent_message(ctx: ToolContext, to_host: str, text: str, reply_to: str = "") -> str:
     """Send a message to another agent's HTTP inbox server."""
-    # If to_host contains a path component, use as-is; otherwise append /message
-    if "/" in to_host:
+    # AgentOS (192.168.1.121) uses /api/ouroboros/send with different format
+    if "121" in to_host:
+        url = "http://192.168.1.121:8000/api/ouroboros/send"
+        payload: Dict[str, Any] = {"text": text}
+        if reply_to:
+            payload["reply_to"] = reply_to
+    elif "/" in to_host:
         url = f"http://{to_host}"
+        payload: Dict[str, Any] = {"from": "ouroboros", "text": text}
+        if reply_to:
+            payload["reply_to"] = reply_to
     else:
         url = f"http://{to_host}/message"
-    payload: Dict[str, Any] = {"from": "ouroboros", "text": text}
-    if reply_to:
-        payload["reply_to"] = reply_to
+        payload: Dict[str, Any] = {"from": "ouroboros", "text": text}
+        if reply_to:
+            payload["reply_to"] = reply_to
     data = json.dumps(payload).encode("utf-8")
     # Save outgoing BEFORE sending to avoid race condition:
     # AgentOS might echo the message back before we write to mailbox.
@@ -236,8 +244,7 @@ def _send_agent_message(ctx: ToolContext, to_host: str, text: str, reply_to: str
     if reply_to:
         out_msg["reply_to"] = reply_to
     with open(mailbox, "a", encoding="utf-8") as f:
-        f.write(json.dumps(out_msg, ensure_ascii=False) + "
-")
+        f.write(json.dumps(out_msg, ensure_ascii=False) + "\n")
     try:
         req = urllib.request.Request(
             url, data=data,
@@ -249,7 +256,6 @@ def _send_agent_message(ctx: ToolContext, to_host: str, text: str, reply_to: str
         return f"Sent to {to_host}: {body}"
     except Exception as e:
         return f"Error sending to {to_host}: {e}"
-
 
 def get_tools() -> List[ToolEntry]:
     return [
@@ -368,4 +374,17 @@ def get_tools() -> List[ToolEntry]:
                 "reply_to": {"type": "string", "description": "Optional: message ID being replied to"},
             }},
         }, _send_agent_message),
+        ToolEntry("reply_to_agent", {
+            "name": "reply_to_agent",
+            "description": "Send A2A reply back to another agent (e.g. Max/AgentOS). Use when responding to A2A messages from other agents. Default reply_url points to AgentOS at 192.168.1.121:8000/a2a.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Reply text to send"},
+                    "reply_url": {"type": "string", "description": "A2A endpoint URL (default: AgentOS)", "default": "http://192.168.1.121:8000/a2a"},
+                    "task_id": {"type": "string", "description": "Original task_id to reference (optional)"},
+                },
+                "required": ["text"],
+            },
+        }, _reply_to_agent),
     ]

@@ -439,6 +439,8 @@ class BackgroundConsciousness:
         # Business operations
         "generate_printables_batch", "assemble_pdf", "list_printables",
         "comfyui_status", "run_shell",
+        # Inter-agent comms
+        "send_agent_message",
     })
 
     def _build_registry(self) -> "ToolRegistry":
