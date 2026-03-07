@@ -117,6 +117,8 @@ async def _start_and_signal(port: int, started: threading.Event, failed: threadi
     app.router.add_post("/comfyui-proxy", _handle_comfyui_proxy)
     app.router.add_get("/comfyui-proxy/models", _handle_comfyui_models)
     app.router.add_get("/.well-known/agent.json", _handle_agent_card)
+    app.router.add_post("/a2a", _handle_a2a)
+    app.router.add_get("/.well-known/agent.json", _handle_agent_card)
     app.router.add_get("/.well-known/agent-card.json", _handle_agent_card)
     app.router.add_post("/a2a", _handle_a2a)
 
@@ -148,6 +150,8 @@ async def start_inbox_server(port: int = INBOX_PORT) -> None:
     app.router.add_get("/health", _handle_health)
     app.router.add_post("/comfyui-proxy", _handle_comfyui_proxy)
     app.router.add_get("/comfyui-proxy/models", _handle_comfyui_models)
+    app.router.add_get("/.well-known/agent.json", _handle_agent_card)
+    app.router.add_post("/a2a", _handle_a2a)
     app.router.add_get("/.well-known/agent.json", _handle_agent_card)
     app.router.add_get("/.well-known/agent-card.json", _handle_agent_card)
     app.router.add_post("/a2a", _handle_a2a)
@@ -795,6 +799,121 @@ async def _handle_comfyui_models(request):
         return web.json_response({"ok": True, "checkpoints": checkpoints})
     except Exception as e:
         return web.json_response({"ok": False, "error": str(e)}, status=502)
+
+
+
+
+async def _handle_agent_card(request):
+    """A2A Agent Card -- describes agent capabilities (GET /.well-known/agent.json)."""
+    from aiohttp import web
+
+    version_file = Path("/home/max2/ouroboros_repo/VERSION")
+    try:
+        version = version_file.read_text().strip()
+    except Exception:
+        version = "6.10.0"
+
+    card = {
+        "name": "Ouroboros",
+        "description": "Autonomous AI agent. ComfyUI image generation, web browsing, inter-agent comms.",
+        "url": "http://192.168.1.225:9191",
+        "version": version,
+        "capabilities": {
+            "streaming": False,
+            "pushNotifications": False,
+            "stateTransitionHistory": False,
+        },
+        "defaultInputModes": ["text/plain", "application/json"],
+        "defaultOutputModes": ["text/plain", "application/json"],
+        "skills": [
+            {
+                "id": "send_message",
+                "name": "Send Message",
+                "description": "Send a message to Ouroboros agent",
+                "inputModes": ["text/plain"],
+                "outputModes": ["text/plain"],
+            },
+            {
+                "id": "comfyui_generate",
+                "name": "Generate Image",
+                "description": "Generate image via ComfyUI + Flux on RTX 3090",
+                "inputModes": ["application/json"],
+                "outputModes": ["application/json"],
+            },
+        ],
+    }
+    return web.json_response(card)
+
+
+async def _handle_a2a(request):
+    """A2A task endpoint -- JSON-RPC 2.0 per Google A2A spec (POST /a2a)."""
+    from aiohttp import web
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response(
+            {"jsonrpc": "2.0", "error": {"code": -32700, "message": "Parse error"}, "id": None},
+            status=400,
+        )
+
+    jsonrpc_id = body.get("id")
+    method = body.get("method", "")
+    params = body.get("params", {})
+
+    if method == "tasks/send":
+        task_id = params.get("id", str(uuid.uuid4()))
+        message = params.get("message", {})
+        parts = message.get("parts", [])
+        text = " ".join(p.get("text", "") for p in parts if p.get("type") == "text")
+        sender = params.get("metadata", {}).get("sender", "a2a-agent")
+
+        msg = {
+            "id": task_id,
+            "from": sender,
+            "to": "ouroboros",
+            "text": text,
+            "session_id": params.get("sessionId"),
+            "timestamp": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+            "read": False,
+            "a2a": True,
+        }
+        MAILBOX_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(MAILBOX_PATH, "a", encoding="utf-8") as f:
+            f.write(__import__("json").dumps(msg, ensure_ascii=False) + "\n")
+        log.info("A2A task from %s: %s", sender, text[:80])
+
+        if _notify_owner is not None:
+            try:
+                _notify_owner(f"\U0001f91d [A2A/{sender}]: {text}")
+            except Exception:
+                pass
+
+        return web.json_response({
+            "jsonrpc": "2.0",
+            "id": jsonrpc_id,
+            "result": {
+                "id": task_id,
+                "status": {"state": "completed"},
+                "artifacts": [{"parts": [{"type": "text", "text": "Message received by Ouroboros."}]}],
+            },
+        })
+
+    elif method == "tasks/get":
+        task_id = params.get("id", "")
+        return web.json_response({
+            "jsonrpc": "2.0",
+            "id": jsonrpc_id,
+            "result": {"id": task_id, "status": {"state": "completed"}},
+        })
+
+    else:
+        return web.json_response({
+            "jsonrpc": "2.0",
+            "id": jsonrpc_id,
+            "error": {"code": -32601, "message": f"Method not found: {method}"},
+        }, status=404)
+
 
 
 # ---------------------------------------------------------------------------
