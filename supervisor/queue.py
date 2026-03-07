@@ -348,6 +348,16 @@ def enforce_task_timeouts() -> None:
 
 def build_evolution_task_text(cycle: int) -> str:
     """Build evolution task text. Minimal trigger — SYSTEM.md has the full instructions."""
+    st = load_state()
+    local_mode = bool(st.get("evolution_local_mode", False))
+    if local_mode:
+        return (
+            f"EVOLUTION #{cycle}\n\n"
+            "LOCAL MODE ACTIVE: For all code implementation use `ollama_code_task` "
+            "instead of `claude_code_task`. Strategy and planning with Claude (free), "
+            "coding execution with Qwen 2.5-Coder 32B via Ollama (free, local). "
+            "This keeps the full evolution cycle cost-free."
+        )
     return f"EVOLUTION #{cycle}"
 
 
