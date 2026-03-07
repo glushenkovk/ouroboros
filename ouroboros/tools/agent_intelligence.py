@@ -1,22 +1,28 @@
 """
-Agent Intelligence tools — Skill Library, Task Retrospectives, Uncertainty Flagging.
+Agent Intelligence tools — Skill Library, Task Retrospectives, Uncertainty Flagging,
+Episode Replay / Pattern Mining, Critic Loop.
 
-Three high-leverage patterns from autonomous agent best practices 2025-2026:
+Best practices from autonomous agent research 2025-2026:
 1. Skill Library — save successful task plans as reusable procedures
-2. Task Retrospective — structured post-task analysis (what worked, what didn't)
+2. Task Retrospective — structured post-task analysis
 3. Uncertainty Flagging — track open unknowns, retrieve before starting tasks
+4. Episode Replay — mine events.jsonl for patterns (budget hotspots, failure modes)
+5. Critic Loop — fast internal self-critique BEFORE committing
 """
 
 from __future__ import annotations
 
 import json
+import re
 import time
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
 _DATA_DIR = Path("/home/max2/ouroboros_data/memory")
+_EVENTS_FILE = Path("/home/max2/ouroboros_data/logs/events.jsonl")
 _SKILLS_FILE = _DATA_DIR / "skills.json"
 _RETRO_FILE = _DATA_DIR / "retrospectives.jsonl"
 _UNCERTAIN_FILE = _DATA_DIR / "uncertainties.json"
@@ -61,7 +67,6 @@ def _skill_get(ctx: ToolContext, name: str = "", tag: str = "") -> str:
             close = [k for k in skills if name.lower() in k.lower()]
             hint = f"\nDid you mean: {', '.join(close)}" if close else ""
             return f"❌ Skill '{name}' not found.{hint}"
-        # Increment used_count
         s["used_count"] = s.get("used_count", 0) + 1
         _SKILLS_FILE.write_text(json.dumps(skills, indent=2))
         return (
@@ -71,7 +76,6 @@ def _skill_get(ctx: ToolContext, name: str = "", tag: str = "") -> str:
             f"🏷️ Tags: {', '.join(s['tags']) or '(none)'} | Used: {s['used_count']}x"
         )
 
-    # List all or filter by tag
     matched = [
         s for s in skills.values()
         if not tag or tag.lower() in [t.lower() for t in s.get("tags", [])]
@@ -223,6 +227,204 @@ def _uncertainty_list(ctx: ToolContext, status: str = "open", domain: str = "") 
     return "\n".join(lines)
 
 
+# ─── Episode Replay / Pattern Mining ─────────────────────────────────────────
+
+def _load_events(last_n: int) -> List[Dict]:
+    """Load last N lines from events.jsonl."""
+    if not _EVENTS_FILE.exists():
+        return []
+    lines = _EVENTS_FILE.read_text().splitlines()
+    recent = lines[-last_n:] if len(lines) > last_n else lines
+    events = []
+    for line in recent:
+        line = line.strip()
+        if line:
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return events
+
+
+def _episode_replay(ctx: ToolContext, last_n: int = 100) -> str:
+    """Analyze last N events from events.jsonl. Returns patterns:
+    - Task success/failure rates
+    - Budget hotspots by model/category
+    - Slow tasks and tool timeouts
+    - Actionable recommendations
+    """
+    events = _load_events(last_n)
+    if not events:
+        return "📊 No events to analyze yet."
+
+    # Aggregate by type
+    task_evals = [e for e in events if e.get("type") == "task_eval"]
+    llm_usage = [e for e in events if e.get("type") == "llm_usage"]
+    tool_timeouts = [e for e in events if e.get("type") in ("tool_timeout", "consciousness_tool_timeout")]
+    llm_errors = [e for e in events if e.get("type") in ("llm_api_error", "llm_empty_response", "consciousness_llm_error")]
+
+    lines = [f"📊 Episode Replay — last {len(events)} events\n"]
+
+    # Task performance
+    if task_evals:
+        ok = sum(1 for e in task_evals if e.get("ok"))
+        fail = len(task_evals) - ok
+        durations = [e.get("duration_sec", 0) for e in task_evals]
+        avg_dur = sum(durations) / len(durations)
+        slow = [e for e in task_evals if e.get("duration_sec", 0) > 60]
+        lines.append(f"🎯 Tasks: {len(task_evals)} total | ✅ {ok} ok | ❌ {fail} failed | avg {avg_dur:.0f}s")
+        if slow:
+            lines.append(f"   🐢 Slow tasks (>60s): {len(slow)} — IDs: {', '.join(e.get('task_id','?')[:8] for e in slow[:5])}")
+
+    # Budget hotspots
+    if llm_usage:
+        total_cost = sum(e.get("cost", 0) for e in llm_usage)
+        by_model: Dict[str, float] = defaultdict(float)
+        by_category: Dict[str, float] = defaultdict(float)
+        for e in llm_usage:
+            m = e.get("model", "unknown") or "unknown"
+            c = e.get("category", "unknown") or "unknown"
+            cost = e.get("cost", 0)
+            by_model[m] += cost
+            by_category[c] += cost
+
+        lines.append(f"\n💰 Budget: ${total_cost:.4f} in these {len(llm_usage)} LLM calls")
+        top_models = sorted(by_model.items(), key=lambda x: -x[1])[:3]
+        for model, cost in top_models:
+            short = model.split("/")[-1] if "/" in model else model
+            lines.append(f"   📌 {short}: ${cost:.4f}")
+        top_cats = sorted(by_category.items(), key=lambda x: -x[1])[:3]
+        lines.append(f"   Categories: {', '.join(f'{c}=${v:.4f}' for c, v in top_cats)}")
+
+    # Tool issues
+    if tool_timeouts:
+        lines.append(f"\n⏱️ Tool timeouts: {len(tool_timeouts)}")
+        by_tool: Dict[str, int] = defaultdict(int)
+        for e in tool_timeouts:
+            t = e.get("tool", e.get("tool_name", "unknown"))
+            by_tool[t] += 1
+        for tool, count in sorted(by_tool.items(), key=lambda x: -x[1])[:5]:
+            lines.append(f"   ⚠️ {tool}: {count}x")
+
+    if llm_errors:
+        lines.append(f"\n🔴 LLM errors: {len(llm_errors)}")
+
+    # Recommendations
+    lines.append("\n💡 Recommendations:")
+    if task_evals and (len(task_evals) - sum(1 for e in task_evals if e.get("ok"))) / len(task_evals) > 0.2:
+        lines.append("  → High failure rate (>20%) — check recent failed task IDs and error patterns")
+    if tool_timeouts and len(tool_timeouts) > 3:
+        lines.append("  → Multiple tool timeouts — consider increasing timeout_sec or using async approach")
+    if llm_usage:
+        consciousness_cost = sum(e.get("cost", 0) for e in llm_usage if e.get("category") == "consciousness")
+        task_cost = sum(e.get("cost", 0) for e in llm_usage if e.get("category") == "task")
+        if consciousness_cost > task_cost and task_cost > 0:
+            lines.append("  → Consciousness costs more than tasks — consider longer sleep intervals or context pruning")
+    if not tool_timeouts and not llm_errors and task_evals and sum(1 for e in task_evals if e.get("ok")) == len(task_evals):
+        lines.append("  ✅ All clear — system running smoothly in this window")
+
+    return "\n".join(lines)
+
+
+# ─── Critic Loop ─────────────────────────────────────────────────────────────
+
+_CRITIC_ANTIPATTERNS = [
+    (r'\bprint\s*\(', "bare print() — use logging instead"),
+    (r'except\s*:', "bare except — catch specific exceptions"),
+    (r'TODO|FIXME|HACK|XXX', "unresolved TODO/FIXME/HACK marker"),
+    (r'hardcoded|HARDCODED', "hardcoded value flagged in comment"),
+    (r'time\.sleep\(\d{2,}', "long sleep() in sync code — consider async"),
+    (r'eval\s*\(|exec\s*\(', "eval/exec — security risk"),
+    (r'password\s*=\s*["\']', "hardcoded password"),
+    (r'import \*', "wildcard import — hides dependencies"),
+]
+
+_BIBLE_CHECKS = [
+    (r'def \w+\([^)]{200,}\)', "method with very long parameter list (>8 params, P5 violation)"),
+    (r'if .+?:\s*\n\s+if .+?:\s*\n\s+if .+?:\s*\n\s+if ', "deep nesting (4+ levels, P5 signal)"),
+]
+
+
+def _critic_review(ctx: ToolContext, code_or_plan: str, context: str = "") -> str:
+    """Fast internal self-critique BEFORE committing.
+
+    Checks for anti-patterns, Bible violations, and simplification opportunities.
+    Not a multi-model review — lightweight rule-based pass.
+    """
+    risks = []
+    simplifications = []
+    bible_violations = []
+
+    # Anti-pattern checks
+    for pattern, message in _CRITIC_ANTIPATTERNS:
+        matches = re.findall(pattern, code_or_plan, re.MULTILINE)
+        if matches:
+            risks.append(f"⚠️ {message} ({len(matches)}x)")
+
+    # Bible checks
+    for pattern, message in _BIBLE_CHECKS:
+        if re.search(pattern, code_or_plan, re.MULTILINE | re.DOTALL):
+            bible_violations.append(f"📖 {message}")
+
+    # Line count check (P5: module < ~1000 lines)
+    lines = code_or_plan.count("\n")
+    if lines > 800:
+        bible_violations.append(f"📖 P5 warning: {lines} lines — approaching 1000-line module limit")
+    elif lines > 1000:
+        bible_violations.append(f"📖 P5 VIOLATION: {lines} lines — exceeds module limit")
+
+    # Function length check
+    func_blocks = re.findall(r'def \w+.*?(?=\ndef |\Z)', code_or_plan, re.DOTALL)
+    long_funcs = [(m[:50], m.count("\n")) for m in func_blocks if m.count("\n") > 150]
+    for name, count in long_funcs:
+        bible_violations.append(f"📖 P5: function ~{count} lines — exceeds 150-line limit: {name}...")
+
+    # Simplification hints
+    if code_or_plan.count("for ") > 5 and "[" in code_or_plan:
+        simplifications.append("💡 Multiple loops — some may be replaceable with list comprehensions")
+    if code_or_plan.count("if ") > code_or_plan.count("else") * 3:
+        simplifications.append("💡 Many if-branches without else — consider dict dispatch or early returns")
+    if len(re.findall(r'\.get\(', code_or_plan)) > 3:
+        simplifications.append("💡 Multiple .get() calls — consider dataclass or TypedDict for structured data")
+
+    # Verdict
+    critical_count = len([r for r in risks if "password" in r or "eval" in r])
+    if critical_count > 0:
+        verdict = "🛑 STOP_AND_RETHINK"
+    elif len(risks) > 3 or len(bible_violations) > 2:
+        verdict = "⚠️ NEEDS_REVIEW"
+    else:
+        verdict = "✅ LOOKS_GOOD"
+
+    lines_out = [f"🔍 Critic Review — {verdict}\n"]
+    if risks:
+        lines_out.append(f"Risks ({len(risks)}):")
+        lines_out.extend(f"  {r}" for r in risks)
+    if bible_violations:
+        lines_out.append(f"\nBible violations ({len(bible_violations)}):")
+        lines_out.extend(f"  {v}" for v in bible_violations)
+    if simplifications:
+        lines_out.append(f"\nSimplifications ({len(simplifications)}):")
+        lines_out.extend(f"  {s}" for s in simplifications)
+    if not risks and not bible_violations and not simplifications:
+        lines_out.append("  No issues found. Proceed with commit.")
+
+    if context:
+        lines_out.append(f"\nContext considered: {context[:100]}")
+
+    return "\n".join(lines_out)
+
+
+def _critic_review_file(ctx: ToolContext, file_path: str) -> str:
+    """Read a file and run critic_review on its contents."""
+    path = Path(file_path)
+    if not path.exists():
+        return f"❌ File not found: {file_path}"
+    content = path.read_text(encoding="utf-8", errors="replace")
+    result = _critic_review(ctx, content, context=f"file: {file_path}")
+    return f"📄 Reviewing: {file_path} ({content.count(chr(10))} lines)\n\n{result}"
+
+
 # ─── Tool registry ─────────────────────────────────────────────────────────────
 
 def get_tools() -> List[ToolEntry]:
@@ -231,7 +433,7 @@ def get_tools() -> List[ToolEntry]:
             name="skill_save",
             schema={
                 "name": "skill_save",
-                "description": "Save a successful task plan as a reusable skill in the skill library. Call after completing a complex task that worked well — saves the steps so next similar task can reuse them.",
+                "description": "Save a successful task plan as a reusable skill in the skill library. Call after completing a complex task that worked well.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -250,7 +452,7 @@ def get_tools() -> List[ToolEntry]:
             name="skill_get",
             schema={
                 "name": "skill_get",
-                "description": "Retrieve a skill by name or list skills by tag. Use BEFORE starting a complex task to check if a procedure already exists.",
+                "description": "Retrieve a skill by name or list skills by tag. Use BEFORE starting a complex task.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -267,7 +469,7 @@ def get_tools() -> List[ToolEntry]:
             name="retrospective_write",
             schema={
                 "name": "retrospective_write",
-                "description": "Record a structured retrospective after completing a task. Builds institutional memory for future iterations.",
+                "description": "Record a structured retrospective after completing a task. Builds institutional memory.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -276,7 +478,7 @@ def get_tools() -> List[ToolEntry]:
                         "what_worked": {"type": "string", "description": "What went well"},
                         "what_failed": {"type": "string", "description": "What went wrong or was slow"},
                         "next_time": {"type": "string", "description": "Concrete improvement for next similar task"},
-                        "cost_usd": {"type": "number", "description": "Approximate cost of the task in USD"},
+                        "cost_usd": {"type": "number", "description": "Approximate cost in USD"},
                     },
                     "required": ["task", "outcome", "what_worked", "what_failed", "next_time"],
                 },
@@ -288,12 +490,12 @@ def get_tools() -> List[ToolEntry]:
             name="retrospective_read",
             schema={
                 "name": "retrospective_read",
-                "description": "Read recent task retrospectives to learn from past work. Use before planning similar tasks.",
+                "description": "Read recent task retrospectives to learn from past work.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "keyword": {"type": "string", "description": "Filter retrospectives by keyword"},
-                        "last_n": {"type": "integer", "description": "Number of recent entries to return (default 5)"},
+                        "keyword": {"type": "string", "description": "Filter by keyword"},
+                        "last_n": {"type": "integer", "description": "Number of recent entries (default 5)"},
                     },
                     "required": [],
                 },
@@ -305,7 +507,7 @@ def get_tools() -> List[ToolEntry]:
             name="uncertainty_flag",
             schema={
                 "name": "uncertainty_flag",
-                "description": "Flag an open question or knowledge gap. Use when you're unsure about something important — captures it for later resolution instead of guessing.",
+                "description": "Flag an open question or knowledge gap instead of guessing.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -327,7 +529,7 @@ def get_tools() -> List[ToolEntry]:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "uid": {"type": "string", "description": "Uncertainty ID (from uncertainty_flag or uncertainty_list)"},
+                        "uid": {"type": "string", "description": "Uncertainty ID"},
                         "resolution": {"type": "string", "description": "The answer or resolution"},
                     },
                     "required": ["uid", "resolution"],
@@ -340,7 +542,7 @@ def get_tools() -> List[ToolEntry]:
             name="uncertainty_list",
             schema={
                 "name": "uncertainty_list",
-                "description": "List open uncertainties. Check before starting a task — if you have flagged questions in this domain, resolve them first.",
+                "description": "List open uncertainties. Check before starting a task.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -352,5 +554,54 @@ def get_tools() -> List[ToolEntry]:
             },
             handler=_uncertainty_list,
             timeout_sec=5,
+        ),
+        ToolEntry(
+            name="episode_replay",
+            schema={
+                "name": "episode_replay",
+                "description": "Analyze recent events.jsonl for patterns: task success rates, budget hotspots, tool timeouts, slow tasks. Use periodically to spot systemic issues.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "last_n": {"type": "integer", "description": "Number of recent log lines to analyze (default 100)"},
+                    },
+                    "required": [],
+                },
+            },
+            handler=_episode_replay,
+            timeout_sec=15,
+        ),
+        ToolEntry(
+            name="critic_review",
+            schema={
+                "name": "critic_review",
+                "description": "Fast internal self-critique of code or plan BEFORE committing. Rule-based: checks anti-patterns, Bible violations (P5 minimalism), simplification opportunities. Not a multi-model review — lightweight, free, instant.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "code_or_plan": {"type": "string", "description": "Code snippet or plan text to review"},
+                        "context": {"type": "string", "description": "What this code/plan is doing (optional)"},
+                    },
+                    "required": ["code_or_plan"],
+                },
+            },
+            handler=_critic_review,
+            timeout_sec=5,
+        ),
+        ToolEntry(
+            name="critic_review_file",
+            schema={
+                "name": "critic_review_file",
+                "description": "Run critic_review on an entire file. Reads the file and checks for anti-patterns and Bible violations.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {"type": "string", "description": "Absolute path to the file to review"},
+                    },
+                    "required": ["file_path"],
+                },
+            },
+            handler=_critic_review_file,
+            timeout_sec=10,
         ),
     ]
