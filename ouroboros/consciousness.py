@@ -41,6 +41,55 @@ from ouroboros.llm_cli import ClaudeCodeClient
 log = logging.getLogger(__name__)
 
 
+
+def _prune_scratchpad_for_task(scratchpad: str, task_hint: str = "") -> str:
+    """Adaptive Context Pruning: inject only sections relevant to the current task.
+
+    Splits scratchpad by ## headers, scores relevance by keyword overlap,
+    always includes: first section (status), last section (lessons).
+    Returns pruned text + note about removed sections.
+    """
+    if not scratchpad or len(scratchpad) < 2000:
+        return scratchpad  # Small enough — keep as is
+
+    sections = re.split(r"(?=^## )", scratchpad, flags=re.MULTILINE)
+    sections = [s.strip() for s in sections if s.strip()]
+
+    if len(sections) <= 3:
+        return scratchpad  # Not enough sections to prune
+
+    # Keyword scoring
+    task_words = set(task_hint.lower().split()) if task_hint else set()
+
+    def score_section(section: str) -> int:
+        if not task_words:
+            return 0
+        section_words = set(re.sub(r"[^a-z0-9 ]", " ", section.lower()).split())
+        return len(task_words & section_words)
+
+    # Always keep: first (status), last (lessons)
+    always_keep = {0, len(sections) - 1}
+
+    # Score middle sections
+    scored = [(i, score_section(s), s) for i, s in enumerate(sections) if i not in always_keep]
+    scored.sort(key=lambda x: -x[1])
+
+    # Keep matching + at least 2 more for balance
+    keep_indices = set(always_keep)
+    for i, sc, _ in scored:
+        if sc > 0 or len(keep_indices) < 4:
+            keep_indices.add(i)
+
+    kept = [sections[i] for i in sorted(keep_indices)]
+    pruned_count = len(sections) - len(kept)
+
+    if pruned_count == 0:
+        return scratchpad
+
+    result = "\n\n".join(kept)
+    result += f"\n\n*[{pruned_count} section(s) pruned for task relevance]*"
+    return result
+
 class BackgroundConsciousness:
     """Persistent background thinking loop for Ouroboros."""
 
@@ -336,11 +385,14 @@ class BackgroundConsciousness:
             parts.append("## Identity\n\n" + clip_text(
                 read_text(identity_path), 6000))
 
-        # Scratchpad
+
+        # Scratchpad (adaptive context pruning — injects only relevant sections)
         scratchpad_path = self._drive_root / "memory" / "scratchpad.md"
         if scratchpad_path.exists():
-            parts.append("## Scratchpad\n\n" + clip_text(
-                read_text(scratchpad_path), 8000))
+            raw_scratchpad = read_text(scratchpad_path)
+            task_hint = getattr(self, "_current_task_hint", "")
+            pruned_scratchpad = _prune_scratchpad_for_task(raw_scratchpad, task_hint)
+            parts.append("## Scratchpad\n\n" + clip_text(pruned_scratchpad, 8000))
 
 
         # Recent events tail (last 15 meaningful events for context)
