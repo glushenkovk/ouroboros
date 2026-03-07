@@ -10,7 +10,7 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.9.0 | [Landing Page](https://glushenkovk.github.io/ouroboros/)
+**Version:** 6.10.0 | [Landing Page](https://glushenkovk.github.io/ouroboros/)
 
 ---
 
@@ -270,6 +270,7 @@ Full text: [BIBLE.md](BIBLE.md)
 ---
 
 ## Changelog
+- **v6.10.0** — A2A shared tools protocol (`tools/list`, `tools/call`), AgentOS best practices (skill library, episode replay, critic loop, hierarchical planning, TTL cache, weighted events, structured self-assessment, priority queue), mindset.md integrated into SYSTEM.md (4 operational patterns), gemma3:27b chat fallback.
 - **v6.9.0** — Etsy API v3 integration: `etsy_oauth_setup`, `etsy_oauth_exchange`, `etsy_get_shop`, `etsy_list_listings`, `etsy_create_listing`, `etsy_delete_listing`. Full OAuth 2.0 + PKCE flow. Digital download listings for printables (PDF upload + publish). Completes the business pipeline: generate → assemble PDF → list on Etsy.
 
 - **v6.8.2** — Consciousness P7 guardian: autonomous version sync monitoring in CONSCIOUSNESS.md. Background consciousness now periodically checks VERSION/pyproject.toml/git tag alignment and self-heals desyncs (Bible P7 self-maintenance).
