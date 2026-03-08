@@ -423,10 +423,13 @@ class OllamaClient:
     @staticmethod
     def _map_model(model: str) -> str:
         """Map cloud model names to local Ollama models."""
+        # If explicit ollama model name (e.g. "gemma3:27b", "qwen2.5:32b") — use as-is
+        if ":" in model or "/" not in model:
+            return model
         if model.startswith("anthropic/"):
-            return "qwen2.5:32b"
+            return os.environ.get("OLLAMA_CHAT_MODEL", "qwen2.5:32b")
         if model.startswith("google/") or model.startswith("openai/"):
-            return "qwen2.5:14b"
+            return os.environ.get("OLLAMA_CHAT_MODEL", "qwen2.5:14b")
         return model
 
     def chat(
@@ -571,6 +574,14 @@ class FallbackLLMClient(LLMClient):
             tool_choice=tool_choice,
         )
 
+        # Explicit Ollama routing: model="ollama/gemma3:27b" or any "ollama/..." prefix
+        if model.startswith("ollama/") and self._free_fallback is not None:
+            ollama_model = model[len("ollama/"):]
+            log.info("[OLLAMA] Explicit routing to Ollama with model %s", ollama_model)
+            kw = dict(call_kwargs)
+            kw["model"] = ollama_model
+            return self._free_fallback.chat(**kw)
+
         # Budget exhausted → skip to free fallback (Ollama)
         if self._budget_remaining_fn is not None:
             remaining = self._budget_remaining_fn()
@@ -607,7 +618,14 @@ class FallbackLLMClient(LLMClient):
         return self._primary.default_model()
 
     def available_models(self) -> List[str]:
-        return self._primary.available_models()
+        models = list(self._primary.available_models())
+        # Add Ollama models if free fallback is available
+        if self._free_fallback is not None:
+            ollama_default = os.environ.get("OLLAMA_CHAT_MODEL", "gemma3:27b")
+            ollama_entry = f"ollama/{ollama_default}"
+            if ollama_entry not in models:
+                models.append(ollama_entry)
+        return models
 
 
 # ---------------------------------------------------------------------------
