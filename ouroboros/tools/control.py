@@ -374,17 +374,5 @@ def get_tools() -> List[ToolEntry]:
                 "reply_to": {"type": "string", "description": "Optional: message ID being replied to"},
             }},
         }, _send_agent_message),
-        ToolEntry("reply_to_agent", {
-            "name": "reply_to_agent",
-            "description": "Send A2A reply back to another agent (e.g. Max/AgentOS). Use when responding to A2A messages from other agents. Default reply_url points to AgentOS at 192.168.1.121:8000/a2a.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "text": {"type": "string", "description": "Reply text to send"},
-                    "reply_url": {"type": "string", "description": "A2A endpoint URL (default: AgentOS)", "default": "http://192.168.1.121:8000/a2a"},
-                    "task_id": {"type": "string", "description": "Original task_id to reference (optional)"},
-                },
-                "required": ["text"],
-            },
-        }, _reply_to_agent),
+
     ]
