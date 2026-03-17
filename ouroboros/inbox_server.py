@@ -83,15 +83,14 @@ def start_inbox_server_background(port: int = INBOX_PORT) -> bool:
     started = threading.Event()
 
     def _run():
+        # Note: config.setup_event_loop() was removed in uvicorn 0.36.0
         config = uvicorn.Config(
             get_app(),
             host="0.0.0.0",
             port=port,
             log_level="warning",
-            loop="asyncio",
         )
         server = uvicorn.Server(config)
-        config.setup_event_loop()
         started.set()
         asyncio.run(server.serve())
 
